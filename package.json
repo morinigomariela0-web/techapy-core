@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "node scripts/dev-runner.js",
     "dev:vite": "vite --host --https",
-    "build": "vite build",
+    "build": "vite build && node scripts/copy-dist-assets.js",
     "start:api": "node server.js",
     "start": "node server.js"
   },
