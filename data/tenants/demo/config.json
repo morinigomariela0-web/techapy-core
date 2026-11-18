@@ -1,0 +1,18 @@
+{
+  "tenant": "demo",
+  "nombre": "TechaPY · Casa de Autor",
+  "ciudad": "Asunción, Paraguay",
+  "moneda": "Gs.",
+  "adminPin": "1234",
+  "waiterPin": "5678",
+  "sectores": [
+    { "sector": "Terraza", "mesas": 4, "meseroNombre": "Juan Pérez", "meseroId": "juan" },
+    { "sector": "Salón Principal", "mesas": 6, "meseroNombre": "Lucía Gómez", "meseroId": "lucia" },
+    { "sector": "Barra", "mesas": 3, "meseroNombre": "Carlos Benítez", "meseroId": "carlos" },
+    { "sector": "Patio", "mesas": 4, "meseroNombre": "Mateo Duarte", "meseroId": "mateo" }
+  ],
+  "credenciales": {
+    "usuario": "admin_demo",
+    "pinAcceso": "1234"
+  }
+}

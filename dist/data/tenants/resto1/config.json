@@ -1,0 +1,17 @@
+{
+  "tenant": "resto1",
+  "nombre": "La Cabrera · Asunción",
+  "ciudad": "Asunción, Paraguay",
+  "moneda": "Gs.",
+  "adminPin": "1234",
+  "waiterPin": "5678",
+  "sectores": [
+    { "sector": "Terraza", "mesas": 5, "meseroNombre": "Marcos Ayala", "meseroId": "marcos" },
+    { "sector": "Salón VIP", "mesas": 8, "meseroNombre": "Sofía Villalba", "meseroId": "sofia" },
+    { "sector": "Cava & Barra", "mesas": 4, "meseroNombre": "Diego Franco", "meseroId": "diego" }
+  ],
+  "credenciales": {
+    "usuario": "admin_resto1",
+    "pinAcceso": "1234"
+  }
+}

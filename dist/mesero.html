@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0e1013" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="TechaPY" />
+  <title>TechaPY · Staff — Panel de Comandas en Tiempo Real</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Playfair+Display:ital,wght@0,500;0,600;0,700;1,400&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="manifest" href="/assets/manifest-RaCuTKv6.json" />
+  <script type="module" crossorigin src="/assets/mesero-C6JI--UV.js"></script>
+  <link rel="modulepreload" crossorigin href="/assets/modulepreload-polyfill-B5Qt9EMX.js">
+  <link rel="stylesheet" crossorigin href="/assets/mesero-C6T4ntAO.css">
+</head>
+<body>
+  <div class="staff-layout">
+    <!-- Cabecera del Mesero -->
+    <header class="staff-header">
+      <div class="staff-identity">
+        <div id="ws-live-indicator" class="live-indicator reconnecting" title="Estado de conexión WebSocket en red local">
+          <span class="pulse-dot"></span>
+          <span id="ws-live-text">RECONECTANDO</span>
+        </div>
+        <div>
+          <span class="editorial-kicker">VISUALIZACIÓN GASTRONÓMICA 3D &amp; AR</span>
+          <h1 id="waiter-title">TechaPY · Mesero: JUAN</h1>
+          <p id="sector-subtitle" class="sector-subtitle">Sector asignado: <strong>Terraza</strong></p>
+        </div>
+      </div>
+
+      <div class="header-controls">
+        <button id="sound-toggle-btn" class="sound-btn active" type="button" title="Probar y activar campana de alerta">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+            <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+          </svg>
+          <span>Alerta Sonora Activa</span>
+        </button>
+        <button id="close-shift-btn" class="clear-btn danger-btn" type="button" title="Archivar órdenes atendidas y cerrar caja del turno">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="21 8 21 21 3 21 3 8"></polyline>
+            <rect x="1" y="3" width="22" height="5"></rect>
+            <line x1="10" y1="12" x2="14" y2="12"></line>
+          </svg>
+          <span>Cerrar Turno / Arqueo</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Barra de métricas y recaudación del turno -->
+    <section class="metrics-bar">
+      <div class="metric-card pending">
+        <span class="metric-label">Pendientes</span>
+        <strong id="count-pendientes">0</strong>
+      </div>
+      <div class="metric-card pos">
+        <span class="metric-label">Cargadas en Caja</span>
+        <strong id="count-caja">0</strong>
+      </div>
+      <div class="metric-card done">
+        <span class="metric-label">Atendidas</span>
+        <strong id="count-atendidos">0</strong>
+      </div>
+      <div class="metric-card revenue">
+        <span class="metric-label">Total Turno</span>
+        <strong id="total-shift-revenue">Gs. 0</strong>
+      </div>
+    </section>
+
+    <!-- Filtros por Sector y Estado -->
+    <section class="filters-bar">
+      <div class="filter-group">
+        <label for="sector-filter">Filtro de Sector:</label>
+        <select id="sector-filter">
+          <option value="ASSIGNED">Solo mi sector asignado</option>
+          <option value="ALL">Todos los sectores</option>
+          <option value="Terraza">Terraza</option>
+          <option value="Salón">Salón</option>
+          <option value="Salón Principal">Salón Principal</option>
+          <option value="Barra">Barra</option>
+          <option value="Patio">Patio</option>
+        </select>
+      </div>
+
+      <div class="status-pills" role="tablist" aria-label="Filtrar por estado">
+        <button type="button" class="status-pill active" data-status="ALL">Todas</button>
+        <button type="button" class="status-pill" data-status="Pendiente">Pendientes</button>
+        <button type="button" class="status-pill" data-status="Cargado en Caja">En Caja</button>
+        <button type="button" class="status-pill" data-status="Atendido">Atendidas</button>
+      </div>
+    </section>
+
+    <!-- Contenedor principal de tarjetas de comanda -->
+    <main id="orders-grid" class="orders-grid" aria-live="polite"></main>
+  </div>
+
+  <!-- Modal de Confirmación: Limpiar Turno / Cerrar Caja -->
+  <aside id="close-shift-modal" class="shift-modal hidden" aria-hidden="true">
+    <div class="shift-modal-card">
+      <div class="shift-modal-header">
+        <h2>Cierre de Turno y Arqueo</h2>
+        <button id="cancel-shift-modal-x" type="button" class="icon-close-btn" aria-label="Cerrar">✕</button>
+      </div>
+
+      <p id="shift-modal-summary" class="shift-modal-summary">
+        ¿Deseas archivar las órdenes atendidas de este turno?
+      </p>
+
+      <div class="shift-modal-options">
+        <button id="archive-attended-btn" type="button" class="shift-btn primary">
+          Archivar Atendidas (Conservar Pendientes)
+        </button>
+        <button id="reset-full-shift-btn" type="button" class="shift-btn danger">
+          Cerrar Caja Completa (Reiniciar Turno)
+        </button>
+        <button id="cancel-shift-btn" type="button" class="shift-btn neutral">
+          Cancelar
+        </button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Banner flotante de alerta sonora -->
+  <div id="alert-banner" class="alert-banner hidden" role="alert">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+      <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+    </svg>
+    <span id="alert-banner-text">Nueva comanda recibida</span>
+  </div>
+
+</body>
+</html>

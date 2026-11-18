@@ -1,0 +1,45 @@
+# ==============================================================================
+# TechaPY — .gitignore estricto para Despliegue Cloud (Render / Railway)
+# ==============================================================================
+
+# Dependencias y binarios locales
+node_modules/
+tools/
+cloudflared
+*.tgz
+
+# Logs de ejecución y procesos en segundo plano
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.server.pid
+*.pid
+
+# Variables de entorno y secretos locales
+.env
+.env.*
+!.env.example
+
+# Archivos temporales y copias de respaldo automáticas
+*.tmp
+*.backup.json
+**/tunnel-info.json
+__pycache__/
+*.pyc
+
+# Sistema Operativo / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Permitir explícitamente el bundle compilado `dist/` y la plantilla `data/tenants/demo/`
+!dist/
+!dist/**
+!data/tenants/demo/
+!data/tenants/demo/menu-data.json
+!data/tenants/demo/config.json
+!assets/tenants/demo/
+!assets/tenants/demo/models/**

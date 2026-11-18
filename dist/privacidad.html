@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0e1013" />
+  <title>Política de Privacidad y Uso de Cámara AR — TechaPY</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Playfair+Display:ital,wght@0,500;0,600;0,700;1,400&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" crossorigin href="/assets/landing-Dcv7XGWE.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container nav-row">
+      <a href="./landing.html" class="brand-logo" aria-label="Volver a TechaPY">
+        <span class="brand-emblem">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+            <path d="M2 17l10 5 10-5"></path>
+            <path d="M2 12l10 5 10-5"></path>
+          </svg>
+        </span>
+        <div>
+          <strong class="brand-title">TechaPY</strong>
+          <span class="brand-sub">VISUALIZACIÓN GASTRONÓMICA 3D &amp; AR</span>
+        </div>
+      </a>
+
+      <nav class="nav-links" aria-label="Navegación legal">
+        <a href="./landing.html">Inicio</a>
+        <a href="./terminos.html">Términos de Uso</a>
+        <a href="./index.html?tenant=demo" class="nav-cta">Probar Carta 3D</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="legal-page-section">
+    <div class="container legal-container">
+      <div class="legal-card">
+        <span class="section-kicker">PRIVACIDAD DEL COMENSAL · LEY N° 6534/20 PARAGUAY</span>
+        <h1>Política de Privacidad y Uso de Cámara AR</h1>
+        <p class="legal-meta">Última actualización: Noviembre 2026 · Cumplimiento de Protección de Datos en la República del Paraguay</p>
+
+        <section class="legal-block highlight-privacy-box">
+          <h2>1. Declaración Expresa sobre el Uso de la Cámara en Realidad Aumentada (AR)</h2>
+          <p>
+            Para ofrecer la función <strong>«Ver en mi mesa (AR 1:1)»</strong>, la carta digital de TechaPY solicita permiso puntual al navegador móvil del comensal para acceder a la cámara trasera del dispositivo mediante estándares web seguros (<code>navigator.mediaDevices.getUserMedia</code>, WebXR, Android Scene Viewer o Apple Quick Look).
+          </p>
+          <p>
+            <strong>Garantía Técnica de Privacidad Absoluta:</strong> El flujo de video de la cámara se procesa <strong>única y exclusivamente en la memoria volátil (RAM) local del teléfono del usuario</strong> con el único propósito de superponer el modelo 3D del plato a escala real sobre la superficie de la mesa.
+          </p>
+          <ul>
+            <li><strong>Cero grabación:</strong> TechaPY jamás graba video ni captura fotografías del entorno ni de las personas presentes en la mesa.</li>
+            <li><strong>Cero almacenamiento:</strong> Ningún fotograma de la cámara se guarda en el almacenamiento del dispositivo ni en bases de datos.</li>
+            <li><strong>Cero transmisión al servidor:</strong> Las imágenes de la cámara nunca abandonan el teléfono del comensal ni se transmiten por red local o Internet hacia servidores de TechaPY o del restaurante.</li>
+            <li><strong>Apagado inmediato:</strong> Al pulsar <em>«Salir de AR»</em> o cerrar la pestaña, todos los canales de video (<code>MediaStreamTrack.stop()</code>) se desconectan de inmediato a nivel de hardware.</li>
+          </ul>
+        </section>
+
+        <section class="legal-block">
+          <h2>2. Datos Operativos de Comandas en Mesa</h2>
+          <p>
+            Para el funcionamiento del sistema de pedidos en salón sin necesidad de registro ni creación de cuentas por parte del comensal, TechaPY procesa únicamente datos operativos no personales vinculados a la mesa física:
+          </p>
+          <ul>
+            <li>Identificador del restaurante (<code>tenant</code>), número de mesa, sector del salón e identificador del mesero asignado (leídos desde el código QR de la mesa).</li>
+            <li>Selección temporal de platos, variantes de cocción, extras y estado de la comanda en curso almacenados localmente en <code>sessionStorage</code> durante la visita.</li>
+          </ul>
+          <p>
+            No exigimos nombre completo, cédula de identidad, correo electrónico, número de teléfono ni datos de tarjetas bancarias al comensal para explorar la carta 3D o enviar su pedido al mesero.
+          </p>
+        </section>
+
+        <section class="legal-block">
+          <h2>3. Datos de Contacto Comercial de Restaurantes (B2B)</h2>
+          <p>
+            Los datos proporcionados voluntariamente por propietarios, gerentes o representantes gastronómicos en el formulario de solicitud de demostración de nuestra página comercial (nombre, cargo, nombre del restaurante, ciudad y número de WhatsApp) se utilizan exclusivamente para coordinar demostraciones presenciales y enviar propuestas comerciales de TechaPY. No comercializamos ni cedemos listados de contacto a terceros.
+          </p>
+        </section>
+
+        <section class="legal-block">
+          <h2>4. Marco Legal y Derechos del Usuario en Paraguay</h2>
+          <p>
+            El tratamiento de la información se realiza en estricto cumplimiento de la <strong>Ley N° 6534/20 «De Protección de Datos Personales Crediticios y Personales»</strong> de la República del Paraguay y normativas concordantes. Cualquier establecimiento o usuario puede ejercer sus derechos de acceso, rectificación o supresión escribiendo a nuestro canal oficial de atención comercial en Asunción.
+          </p>
+        </section>
+
+        <div class="legal-actions-footer">
+          <a href="./landing.html" class="btn-outline-gold">← Volver a la Página Principal</a>
+          <a href="./terminos.html" class="btn-solid-gold">Ver Términos y Condiciones →</a>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-corporate">
+      <div class="footer-brand-col">
+        <strong class="footer-brand">TechaPY</strong>
+        <p>Visualización Gastronómica 3D, Realidad Aumentada 1:1 y Comandas en Tiempo Real para Restaurantes en Paraguay.</p>
+      </div>
+      <div class="footer-links-group">
+        <div class="footer-links">
+          <a href="./landing.html">Inicio Comercial</a>
+          <a href="./terminos.html">Términos y Condiciones</a>
+          <a href="./privacidad.html">Política de Privacidad</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

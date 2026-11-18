@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TechaPY · Admin — Gestión de Carta 3D &amp; AR</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Playfair+Display:ital,wght@0,500;0,600;0,700;1,400&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script type="module" crossorigin src="/assets/adminMenu-BBCiis94.js"></script>
+  <link rel="modulepreload" crossorigin href="/assets/modulepreload-polyfill-B5Qt9EMX.js">
+  <link rel="stylesheet" crossorigin href="/assets/adminMenu-OMExjqvI.css">
+</head>
+<body>
+  <div class="admin-menu-layout">
+    <!-- Cabecera Superior con Navegación y Guardado Global -->
+    <header class="admin-topbar">
+      <div class="brand-area">
+        <span class="brand-dot" aria-hidden="true"></span>
+        <div>
+          <span class="editorial-kicker">VISUALIZACIÓN GASTRONÓMICA 3D &amp; AR</span>
+          <h1>TechaPY · Gestión de Carta</h1>
+          <p id="restaurant-subtitle">Edita platos, precios en Guaraníes (Gs.), alérgenos, cotas 3D, modelos .glb y variantes</p>
+        </div>
+      </div>
+
+      <div class="topbar-actions">
+        <a href="./landing.html" class="nav-pill">Landing Comercial</a>
+        <a href="./admin-qr.html" class="nav-pill">Generador QR Mesas</a>
+        <a href="./mesero.html?id=juan&amp;sector=Terraza" target="_blank" class="nav-pill">Panel Mesero</a>
+        <a href="./index.html" target="_blank" class="nav-pill preview">Vista Cliente 3D</a>
+        <button id="save-menu-server-btn" type="button" class="btn-save-global">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+            <polyline points="17 21 17 13 7 13 7 21"></polyline>
+            <polyline points="7 3 7 8 15 8"></polyline>
+          </svg>
+          <span>Guardar Cambios en Carta</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Barra de Estado y Acciones del Catálogo -->
+    <section class="catalog-toolbar">
+      <div class="toolbar-left">
+        <div class="restaurant-name-inline">
+          <label for="global-tenant-id">Tenant:</label>
+          <input id="global-tenant-id" type="text" value="demo" style="width: 110px;" title="Identificador del restaurante (ej: demo, resto1)" />
+        </div>
+        <div class="restaurant-name-inline">
+          <label for="global-restaurant-name">Restaurante:</label>
+          <input id="global-restaurant-name" type="text" value="TechaPY · Casa de Autor" />
+        </div>
+        <span id="unsaved-indicator" class="unsaved-badge hidden">● Cambios pendientes de guardar</span>
+      </div>
+
+      <div class="toolbar-right">
+        <button id="new-dish-btn" type="button" class="btn-new-dish">
+          <span>+ Nuevo Plato</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- Contenedor de Platos Agrupados por Categoría -->
+    <main id="categories-catalog-container" class="categories-catalog-container" aria-live="polite"></main>
+  </div>
+
+  <!-- Modal de Edición / Creación de Plato -->
+  <aside id="dish-editor-modal" class="editor-modal hidden" aria-hidden="true">
+    <div class="editor-modal-dialog" role="dialog" aria-labelledby="editor-modal-title">
+      <div class="editor-modal-header">
+        <div>
+          <span class="editor-kicker">Configuración de Plato 3D / AR</span>
+          <h2 id="editor-modal-title">Editar Plato</h2>
+        </div>
+        <button id="close-editor-x" type="button" class="icon-close" aria-label="Cerrar editor">✕</button>
+      </div>
+
+      <form id="dish-editor-form" class="editor-form" autocomplete="off">
+        <!-- 1. Datos Principales -->
+        <fieldset class="form-section">
+          <legend>1. Información General y Precio</legend>
+          <div class="form-grid-4">
+            <div class="field-col span-2">
+              <label for="field-nombre">Nombre del Plato *</label>
+              <input id="field-nombre" type="text" required placeholder="Ej. Tonkotsu Ramen Especial" />
+            </div>
+
+            <div class="field-col">
+              <label for="field-categoria">Categoría *</label>
+              <input id="field-categoria" type="text" list="category-suggestions" required placeholder="Ej. Principales" />
+              <datalist id="category-suggestions">
+                <option value="Entrantes"></option>
+                <option value="Principales"></option>
+                <option value="Postres"></option>
+                <option value="Bebidas"></option>
+              </datalist>
+            </div>
+
+            <div class="field-col">
+              <label for="field-precio">Precio Base (Gs.) *</label>
+              <div class="price-input-group">
+                <input id="field-precio" type="number" step="500" min="0" required placeholder="45000" />
+                <select id="field-moneda" aria-label="Moneda">
+                  <option value="Gs." selected>Gs. (PYG)</option>
+                  <option value="USD">USD ($)</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="field-col">
+            <label for="field-descripcion">Descripción Gastronómica</label>
+            <textarea id="field-descripcion" rows="2" placeholder="Describe ingredientes, método de cocción y presentación..."></textarea>
+          </div>
+        </fieldset>
+
+        <!-- 2. Alérgenos (Chips / Tags interactivos) e Información Nutricional -->
+        <fieldset class="form-section">
+          <legend>2. Alérgenos e Información Nutricional</legend>
+
+          <div class="field-col">
+            <label>Alérgenos Declarados (Haz clic para activar/desactivar o añade uno nuevo)</label>
+            <div id="allergens-chips-box" class="allergens-chips-box"></div>
+            <div class="add-allergen-row">
+              <input id="custom-allergen-input" type="text" placeholder="Añadir otro alérgeno (ej. Mostaza, Apio)..." />
+              <button id="add-custom-allergen-btn" type="button" class="btn-secondary-sm">+ Añadir Alérgeno</button>
+            </div>
+          </div>
+
+          <div class="form-grid-4">
+            <div class="field-col">
+              <label for="field-calorias">Calorías</label>
+              <input id="field-calorias" type="text" placeholder="Ej. 450 kcal" />
+            </div>
+            <div class="field-col">
+              <label for="field-proteinas">Proteínas</label>
+              <input id="field-proteinas" type="text" placeholder="Ej. 22 g" />
+            </div>
+            <div class="field-col">
+              <label for="field-carbohidratos">Carbohidratos</label>
+              <input id="field-carbohidratos" type="text" placeholder="Ej. 48 g" />
+            </div>
+            <div class="field-col">
+              <label for="field-grasas">Grasas</label>
+              <input id="field-grasas" type="text" placeholder="Ej. 16 g" />
+            </div>
+          </div>
+        </fieldset>
+
+        <!-- 3. Dimensiones Reales (Cotas 3D y Escala AR 1:1) y Modelo 3D -->
+        <fieldset class="form-section">
+          <legend>3. Modelo 3D (.glb), Geometría de Respaldo y Dimensiones Reales (AR 1:1)</legend>
+
+          <div class="form-grid-4">
+            <div class="field-col">
+              <label for="field-diametro">Diámetro del Plato (cm)</label>
+              <input id="field-diametro" type="number" min="5" max="80" step="1" value="24" />
+            </div>
+            <div class="field-col">
+              <label for="field-altura">Altura del Plato (cm)</label>
+              <input id="field-altura" type="number" min="1" max="60" step="1" value="6" />
+            </div>
+            <div class="field-col">
+              <label for="field-fallback-geo">Geometría Procedural (Fallback)</label>
+              <select id="field-fallback-geo">
+                <option value="torusKnot">TorusKnot (Nudo Gourmet)</option>
+                <option value="cylinder">Cylinder (Timbal / Pastel)</option>
+                <option value="sphere">Sphere (Domo / Helado)</option>
+                <option value="gyozas">Gyozas en Bandeja</option>
+                <option value="ramen">Cuenco Donburi Ramen</option>
+                <option value="mochi">Trío de Mochi Artesanal</option>
+              </select>
+            </div>
+            <div class="field-col">
+              <label for="field-fallback-color">Color Procedural 3D</label>
+              <div class="color-picker-row">
+                <input id="field-fallback-color" type="color" value="#c5a059" />
+                <input id="field-fallback-color-hex" type="text" value="#c5a059" maxlength="9" />
+              </div>
+            </div>
+          </div>
+
+          <!-- Subida de archivo .glb o ruta manual -->
+          <div class="glb-upload-panel">
+            <div class="field-col span-2">
+              <label for="field-ruta-glb">Ruta del Archivo 3D (.glb)</label>
+              <input id="field-ruta-glb" type="text" placeholder="./assets/tenants/demo/models/mi-plato.glb" />
+              <small class="hint-text">Si el archivo aún no existe en disco, el visor 3D usará automáticamente la geometría procedural elegida arriba.</small>
+            </div>
+
+            <div class="upload-box">
+              <label for="glb-file-input" class="btn-upload-glb">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="17 8 12 3 7 8"></polyline>
+                  <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+                <span>Subir archivo .glb desde mi equipo</span>
+              </label>
+              <input id="glb-file-input" type="file" accept=".glb,model/gltf-binary" class="sr-only" />
+              <span id="glb-upload-status" class="upload-status">Guarda directamente en <code>assets/tenants/{tenant}/models/</code></span>
+            </div>
+          </div>
+        </fieldset>
+
+        <!-- 4. Gestor Dinámico de Variantes y Extras -->
+        <fieldset class="form-section">
+          <legend>
+            <span>4. Variantes, Cocción, Picante y Extras con Suplemento</span>
+            <button id="add-option-group-btn" type="button" class="btn-secondary-sm">
+              + Añadir Grupo de Opciones
+            </button>
+          </legend>
+
+          <div id="option-groups-editor" class="option-groups-editor"></div>
+        </fieldset>
+
+        <!-- Pie del Modal -->
+        <div class="editor-modal-footer">
+          <button id="cancel-editor-btn" type="button" class="btn-cancel">Cancelar</button>
+          <button type="submit" class="btn-apply-dish">
+            ✓ Aplicar al Catálogo y Guardar
+          </button>
+        </div>
+      </form>
+    </div>
+  </aside>
+
+  <!-- Toast de Notificación -->
+  <div id="admin-toast" class="admin-toast hidden" role="status" aria-live="polite"></div>
+
+</body>
+</html>

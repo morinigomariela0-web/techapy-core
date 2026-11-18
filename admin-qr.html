@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TechaPY · Admin — Generador de Placas QR para Mesas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Playfair+Display:ital,wght@0,500;0,600;0,700;1,400&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./css/admin-qr.css" />
+  <!-- Biblioteca generadora de códigos QR local offline (ISO/IEC 18004) sin dependencia de CDN -->
+  <script src="./js/vendor/qrcode.min.js"></script>
+</head>
+<body>
+  <div class="admin-container">
+    <!-- Cabecera Administrativa (Se oculta al imprimir) -->
+    <header class="admin-header no-print">
+      <div class="brand-block">
+        <span class="brand-dot" aria-hidden="true"></span>
+        <div>
+          <span class="editorial-kicker">VISUALIZACIÓN GASTRONÓMICA 3D &amp; AR</span>
+          <h1>TechaPY · Placas QR de Mesa (Multi-Tenant)</h1>
+          <p>Configura el identificador del local, sectores, mesas y meseros para imprimir placas de acrílico o metal</p>
+        </div>
+      </div>
+
+      <div class="header-links">
+        <a href="./landing.html" class="nav-link">Landing Comercial</a>
+        <a id="nav-admin-menu" href="./admin-menu.html?tenant=demo" class="nav-link">Gestión de Carta</a>
+        <a id="nav-client-preview" href="./index.html?tenant=demo" target="_blank" class="nav-link">Vista Cliente 3D/AR</a>
+        <a id="nav-waiter-preview" href="./mesero.html?tenant=demo&amp;id=juan&amp;sector=Terraza" target="_blank" class="nav-link">Panel Mesero</a>
+      </div>
+    </header>
+
+    <!-- Panel de Configuración (Se oculta al imprimir) -->
+    <section class="config-panel no-print" aria-label="Configuración de sectores y mesas">
+      <div class="config-grid-top">
+        <div class="form-group">
+          <label for="tenant-id">Identificador del Local (Tenant)</label>
+          <input
+            id="tenant-id"
+            type="text"
+            list="tenant-suggestions"
+            value="demo"
+            placeholder="Ej. demo o resto1"
+          />
+          <datalist id="tenant-suggestions">
+            <option value="demo">TechaPY · Casa de Autor</option>
+            <option value="resto1">La Cabrera · Asunción</option>
+          </datalist>
+          <small class="field-hint">Se incluye en cada QR como <code>?tenant=nombre-local</code></small>
+        </div>
+
+        <div class="form-group">
+          <label for="restaurant-name">Nombre del Restaurante</label>
+          <input
+            id="restaurant-name"
+            type="text"
+            value="TechaPY · Casa de Autor"
+            placeholder="Ej. TechaPY · Casa de Autor"
+          />
+        </div>
+
+        <div class="form-group">
+          <label for="base-url">URL Base / Túnel HTTPS o IP Local</label>
+          <input
+            id="base-url"
+            type="url"
+            value="https://192.168.100.7:5173"
+            data-tunnel-url="https://192.168.100.7:5173"
+            placeholder="https://xxxx.trycloudflare.com"
+          />
+          <small id="detected-ip-hint" class="field-hint">Autocompletado con el túnel HTTPS público o IP Wi-Fi local.</small>
+        </div>
+
+        <div class="form-group">
+          <label for="numbering-mode">Numeración de Mesas</label>
+          <select id="numbering-mode">
+            <option value="global">Correlativa global (Mesa 1 a N)</option>
+            <option value="sector">Por sector (Mesa 1 a N en cada sector)</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Tabla dinámica de Sectores -->
+      <div class="sectors-header">
+        <h2>Sectores, Cantidad de Mesas y Mesero Asignado</h2>
+        <button id="add-sector-btn" type="button" class="btn-outline">+ Añadir Sector</button>
+      </div>
+
+      <div id="sectors-list" class="sectors-list"></div>
+
+      <!-- Acciones principales -->
+      <div class="config-actions">
+        <button id="generate-qr-btn" type="button" class="btn-generate">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="3" width="7" height="7"></rect>
+            <rect x="14" y="3" width="7" height="7"></rect>
+            <rect x="14" y="14" width="7" height="7"></rect>
+            <rect x="3" y="14" width="7" height="7"></rect>
+          </svg>
+          <span>Generar Placas QR</span>
+        </button>
+        <button id="print-qr-btn" type="button" class="btn-print">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="6 9 6 2 18 2 18 9"></polyline>
+            <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path>
+            <rect x="6" y="14" width="12" height="8"></rect>
+          </svg>
+          <span>Imprimir Placas de Mesa</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- Barra de Resumen Pre-Impresión (Se oculta al imprimir) -->
+    <div id="summary-bar" class="summary-bar no-print">
+      <span id="summary-text">Placas generadas listas para impresión A4 / Carta.</span>
+      <span class="print-tip">Nota de impresión: activa "Gráficos de fondo" en el diálogo de tu navegador para conservar el acabado mineral.</span>
+    </div>
+
+    <!-- Cuadrícula de Tarjetas QR (Optimizada para pantalla e impresión @media print) -->
+    <main id="qr-cards-grid" class="qr-cards-grid" aria-live="polite"></main>
+  </div>
+
+  <script type="module" src="./js/admin-qr.js"></script>
+</body>
+</html>

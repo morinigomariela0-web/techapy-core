@@ -1,0 +1,252 @@
+{
+  "restaurante": {
+    "tenant": "resto1",
+    "nombre": "La Cabrera · Asunción",
+    "monedaSimbolo": "Gs.",
+    "sectores": [
+      "Terraza",
+      "Salón Principal",
+      "Barra",
+      "Patio"
+    ]
+  },
+  "platos": [
+    {
+      "id": "gyozas-cerdo",
+      "category": "Entrantes",
+      "nombre": "Gyozas Artesanales a la Plancha",
+      "precio": 45000,
+      "moneda": "Gs.",
+      "descripcion": "Empanadillas japonesas rellenas de cerdo seleccionado, col china, jengibre fresco y cebollita de verdeo, doradas con base crujiente y cocidas al vapor.",
+      "alergenos": [
+        "Gluten",
+        "Soja",
+        "Sésamo"
+      ],
+      "nutricion": {
+        "calorias": "320 kcal",
+        "proteinas": "14 g",
+        "carbohidratos": "36 g",
+        "grasas": "13 g"
+      },
+      "opciones": [
+        {
+          "id": "coccion",
+          "nombre": "Tipo de cocción",
+          "tipo": "radio",
+          "obligatorio": true,
+          "valores": [
+            {
+              "id": "plancha",
+              "etiqueta": "A la plancha dorada",
+              "precioExtra": 0,
+              "porDefecto": true
+            },
+            {
+              "id": "vapor",
+              "etiqueta": "Al vapor",
+              "precioExtra": 0
+            }
+          ]
+        },
+        {
+          "id": "salsa",
+          "nombre": "Salsa",
+          "tipo": "radio",
+          "obligatorio": true,
+          "valores": [
+            {
+              "id": "soja",
+              "etiqueta": "Soja tradicional",
+              "precioExtra": 0,
+              "porDefecto": true
+            },
+            {
+              "id": "picante-dulce",
+              "etiqueta": "Picante dulce",
+              "precioExtra": 5000
+            }
+          ]
+        }
+      ],
+      "ruta_modelo_glb": "./assets/tenants/demo/models/burger.glb",
+      "escala": 1.0,
+      "escala_ar_metros": 0.12,
+      "diametro_cm": 24,
+      "altura_cm": 6,
+      "dimensiones_reales": "⌀ 24 cm · Altura 6 cm",
+      "fallbackGeometry": "gyozas",
+      "fallbackColor": "#C5A059",
+      "cameraConfig": {
+        "position": {
+          "x": 0,
+          "y": 2.1,
+          "z": 3.2
+        },
+        "target": {
+          "x": 0,
+          "y": 0.2,
+          "z": 0
+        }
+      }
+    },
+    {
+      "id": "tonkotsu-ramen",
+      "category": "Principales",
+      "nombre": "Tonkotsu Ramen Especial",
+      "precio": 78000,
+      "moneda": "Gs.",
+      "descripcion": "Caldo cremoso cocinado durante 18 horas a fuego lento, fideos alcalinos artesanales, panceta chashu braseada, huevo marinado ajitsuke tamago, narutomaki y alga nori.",
+      "alergenos": [
+        "Gluten",
+        "Huevo",
+        "Soja",
+        "Pescado",
+        "Sésamo"
+      ],
+      "nutricion": {
+        "calorias": "680 kcal",
+        "proteinas": "34 g",
+        "carbohidratos": "62 g",
+        "grasas": "31 g"
+      },
+      "opciones": [
+        {
+          "id": "picante",
+          "nombre": "Nivel de picante",
+          "tipo": "radio",
+          "obligatorio": true,
+          "valores": [
+            {
+              "id": "suave",
+              "etiqueta": "Suave",
+              "precioExtra": 0
+            },
+            {
+              "id": "medio",
+              "etiqueta": "Medio",
+              "precioExtra": 0,
+              "porDefecto": true
+            },
+            {
+              "id": "fuego",
+              "etiqueta": "Fuego 🔥",
+              "precioExtra": 0
+            }
+          ]
+        },
+        {
+          "id": "extras",
+          "nombre": "Extras",
+          "tipo": "checkbox",
+          "obligatorio": false,
+          "valores": [
+            {
+              "id": "huevo-extra",
+              "etiqueta": "Huevo ajitsuke extra",
+              "precioExtra": 8000
+            },
+            {
+              "id": "chashu-extra",
+              "etiqueta": "Chashu extra",
+              "precioExtra": 14000
+            }
+          ]
+        }
+      ],
+      "ruta_modelo_glb": "./assets/tenants/demo/models/ramen.glb",
+      "escala": 1.1,
+      "escala_ar_metros": 0.11,
+      "diametro_cm": 22,
+      "altura_cm": 11,
+      "dimensiones_reales": "⌀ 22 cm · Altura 11 cm",
+      "fallbackGeometry": "ramen",
+      "fallbackColor": "#D4AF37",
+      "cameraConfig": {
+        "position": {
+          "x": 0.4,
+          "y": 2.5,
+          "z": 3.4
+        },
+        "target": {
+          "x": 0,
+          "y": 0.35,
+          "z": 0
+        }
+      }
+    },
+    {
+      "id": "mochi-duo",
+      "category": "Postres",
+      "nombre": "Trío de Mochi Imperial",
+      "precio": 38000,
+      "moneda": "Gs.",
+      "descripcion": "Pastelillos tradicionales de arroz glutinoso rellenos de ganache artesanal. Elige tu combinación favorita de 3 sabores de la casa.",
+      "alergenos": [
+        "Lácteos",
+        "Soja",
+        "Sésamo"
+      ],
+      "nutricion": {
+        "calorias": "240 kcal",
+        "proteinas": "4 g",
+        "carbohidratos": "44 g",
+        "grasas": "6 g"
+      },
+      "opciones": [
+        {
+          "id": "sabores",
+          "nombre": "Selección de 3 sabores",
+          "tipo": "multiselect",
+          "maxSeleccion": 3,
+          "obligatorio": true,
+          "valores": [
+            {
+              "id": "matcha",
+              "etiqueta": "Matcha",
+              "precioExtra": 0,
+              "porDefecto": true
+            },
+            {
+              "id": "yuzu",
+              "etiqueta": "Yuzu",
+              "precioExtra": 0,
+              "porDefecto": true
+            },
+            {
+              "id": "sesamo-negro",
+              "etiqueta": "Sésamo negro",
+              "precioExtra": 0
+            },
+            {
+              "id": "fresa",
+              "etiqueta": "Frutilla",
+              "precioExtra": 0,
+              "porDefecto": true
+            }
+          ]
+        }
+      ],
+      "ruta_modelo_glb": "./assets/tenants/demo/models/dessert.glb",
+      "escala": 1.0,
+      "escala_ar_metros": 0.1,
+      "diametro_cm": 20,
+      "altura_cm": 6,
+      "dimensiones_reales": "⌀ 20 cm · Altura 6 cm",
+      "fallbackGeometry": "mochi",
+      "fallbackColor": "#C5A059",
+      "cameraConfig": {
+        "position": {
+          "x": -0.3,
+          "y": 1.8,
+          "z": 2.8
+        },
+        "target": {
+          "x": 0,
+          "y": 0.2,
+          "z": 0
+        }
+      }
+    }
+  ]
+}

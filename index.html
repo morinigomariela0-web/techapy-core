@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0e1013" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="TechaPY" />
+  <title>TechaPY — Visualización Gastronómica 3D & AR</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Playfair+Display:ital,wght@0,500;0,600;0,700;1,400&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="stylesheet" href="./css/styles.css" />
+
+  <!-- ImportMap nativo para Three.js v0.164.1 -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/"
+      }
+    }
+  </script>
+
+  <!-- Componente oficial @google/model-viewer para Realidad Aumentada (WebXR / Scene Viewer / Quick Look) -->
+  <script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/3.5.0/model-viewer.min.js"></script>
+</head>
+<body>
+  <main class="app-shell">
+    <!-- MITAD SUPERIOR (58% vh): Escenario 3D y Cámara AR 1:1 totalmente despejado en el centro -->
+    <section id="viewer-stage" class="viewer-stage" aria-label="Visor 3D y Realidad Aumentada">
+      <!-- Stream de cámara trasera en vivo para Modo Cámara Directa (AR Passthrough 1:1) -->
+      <video
+        id="ar-camera-feed"
+        class="ar-camera-feed hidden"
+        playsinline
+        webkit-playsinline
+        autoplay
+        muted
+      ></video>
+
+      <!-- Contenedor WebGL 3D (con alpha: true transparente sobre el video en modo AR) -->
+      <div id="canvas-container" aria-label="Visor 3D interactivo del plato"></div>
+
+      <!-- Indicador de carga acotado al escenario 3D -->
+      <div id="loading-overlay" class="loading-overlay" role="status" aria-live="polite">
+        <div class="spinner"></div>
+        <p id="loading-text">Preparando experiencia 3D...</p>
+      </div>
+
+      <!-- Barra Superior Compacta: Marca, Mesa/Sector, Llamar Mesero y Comanda -->
+      <header class="top-bar">
+        <div class="brand-row">
+          <div class="brand">
+            <span class="brand-dot" aria-hidden="true"></span>
+            <div>
+              <h1 id="restaurant-brand-title">
+                <span class="brand-serif">TechaPY</span>
+                <span class="brand-badge">VISUALIZACIÓN GASTRONÓMICA 3D &amp; AR</span>
+              </h1>
+              <div class="brand-subrow">
+                <span id="table-context-badge" class="table-context-badge">Mesa 4 · Terraza</span>
+                <span id="ws-status-badge" class="ws-status-badge reconnecting" role="status" aria-live="polite">● Reconectando</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="top-actions">
+            <button id="call-waiter-btn" class="call-waiter-btn" type="button" title="Solicitar atención del mesero asignado">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+                <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+              </svg>
+              <span>Llamar Mesero</span>
+            </button>
+
+            <button id="cart-button" class="cart-btn" type="button" aria-label="Ver comanda">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"></path>
+                <line x1="3" y1="6" x2="21" y2="6"></line>
+                <path d="M16 10a4 4 0 0 1-8 0"></path>
+              </svg>
+              <span>Comanda</span>
+              <span id="cart-count" class="cart-count">0</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Selector dinámico de categorías -->
+        <nav id="category-tabs" class="category-tabs" aria-label="Categorías del menú"></nav>
+      </header>
+
+      <!-- Etiqueta de cota activa en esquina inferior izquierda del visor -->
+      <div id="dimensions-hud-badge" class="dimensions-hud-badge hidden" aria-live="polite">
+        <span class="ruler-dot"></span>
+        <span id="dimensions-hud-text">⌀ 24 cm · Altura 6 cm</span>
+      </div>
+
+      <!-- Botones flotantes compactos y discretos en la esquina inferior derecha del visor 3D -->
+      <div class="viewer-floating-controls">
+        <div class="viewer-buttons-row">
+          <button id="toggle-dimensions-btn" class="dimensions-toggle-btn" type="button" aria-pressed="false" title="Mostrar u ocultar cotas en cm">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21.3 15.3a2.4 2.4 0 0 1 0 3.4l-2.6 2.6a2.4 2.4 0 0 1-3.4 0L2.7 8.7a2.41 2.41 0 0 1 0-3.4l2.6-2.6a2.41 2.41 0 0 1 3.4 0Z"></path>
+              <path d="m14.5 12.5 2-2"></path>
+              <path d="m11.5 9.5 2-2"></path>
+              <path d="m8.5 6.5 2-2"></path>
+              <path d="m17.5 15.5 2-2"></path>
+            </svg>
+            <span>Dimensiones</span>
+          </button>
+
+          <button id="open-ar-btn" class="ar-launch-btn" type="button">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+              <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+              <line x1="12" y1="22.08" x2="12" y2="12"></line>
+            </svg>
+            <span id="open-ar-btn-label">Ver en mi mesa (AR)</span>
+            <span class="ar-scale-pill">1:1</span>
+          </button>
+
+          <button id="exit-ar-btn" class="exit-ar-btn hidden" type="button" title="Apagar cámara y volver al visor 3D">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+            <span>Salir de AR</span>
+          </button>
+
+          <button id="secondary-native-ar-btn" class="native-ar-secondary-btn hidden" type="button" title="Abrir en Scene Viewer / Quick Look nativo">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M15 3h6v6"></path>
+              <path d="M9 21H3v-6"></path>
+              <path d="M21 3l-7 7"></path>
+              <path d="M3 21l7-7"></path>
+            </svg>
+            <span>AR Nativo</span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- MITAD INFERIOR (42% vh con overflow-y: auto): Carrusel de platos + Panel de detalles debajo del visor 3D -->
+    <section id="details-scroll-sheet" class="bottom-dock" aria-label="Detalles del plato y personalización">
+      <!-- Carrusel horizontal de platos -->
+      <div id="dishes-carousel" class="dishes-carousel" role="listbox" aria-label="Selector de platos"></div>
+
+      <!-- Tarjeta de información y variantes del plato seleccionado -->
+      <div id="dish-detail-panel" class="dish-detail-card">
+        <div class="dish-header">
+          <div>
+            <span id="dish-category" class="dish-category-tag">Categoría</span>
+            <h2 id="dish-title" class="dish-title">Cargando plato...</h2>
+          </div>
+          <div id="dish-price" class="dish-price">Gs. 0</div>
+        </div>
+
+        <p id="dish-description" class="dish-description">
+          Selecciona un plato del carrusel para inspeccionar su presentación en 3D o proyectarlo en tu mesa con AR.
+        </p>
+
+        <!-- Contenedor dinámico de variantes, cocción, picante, sabores y extras -->
+        <div id="dish-options-container" class="dish-options-container" aria-label="Personalización del plato"></div>
+
+        <div class="dish-actions">
+          <button id="toggle-nutrition-btn" class="btn-secondary" type="button">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="12" y1="16" x2="12" y2="12"></line>
+              <line x1="12" y1="8" x2="12.01" y2="8"></line>
+            </svg>
+            <span>Ficha y Alérgenos</span>
+          </button>
+          <button id="add-to-order-btn" class="btn-primary" type="button">
+            <span id="add-to-order-label">+ Añadir a comanda</span>
+          </button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Modales flotantes (Ficha Nutricional, Visor AR Nativo y Comanda) -->
+  <div class="ui-layer">
+    <!-- Panel flotante de detalles nutricionales y alérgenos -->
+    <aside id="nutrition-panel" class="nutrition-panel hidden" aria-hidden="true">
+      <div class="nutrition-header">
+        <div>
+          <span class="nutrition-subtitle">Ficha técnica y escala métrica</span>
+          <h2 id="nutrition-dish-title">Valores Nutricionales</h2>
+        </div>
+        <button id="close-nutrition-btn" class="icon-btn" type="button" aria-label="Cerrar panel nutricional">✕</button>
+      </div>
+
+      <div class="nutrition-grid">
+        <div class="nutrition-item">
+          <span class="nutrition-label">Calorías</span>
+          <strong id="nutri-calorias">—</strong>
+        </div>
+        <div class="nutrition-item">
+          <span class="nutrition-label">Proteínas</span>
+          <strong id="nutri-proteinas">—</strong>
+        </div>
+        <div class="nutrition-item">
+          <span class="nutrition-label">Carbohidratos</span>
+          <strong id="nutri-carbohidratos">—</strong>
+        </div>
+        <div class="nutrition-item">
+          <span class="nutrition-label">Grasas</span>
+          <strong id="nutri-grasas">—</strong>
+        </div>
+      </div>
+
+      <div class="allergens-section">
+        <span class="nutrition-label">Dimensiones reales del plato (Escala 1:1)</span>
+        <p id="dish-real-dimensions" class="dimensions-badge">⌀ 24 cm · Altura 6 cm</p>
+      </div>
+
+      <div class="allergens-section">
+        <span class="nutrition-label">Alérgenos declarados</span>
+        <div id="allergens-list" class="allergens-list"></div>
+      </div>
+    </aside>
+
+    <!-- Modal de Realidad Aumentada (AR Escala Real 1:1 con @google/model-viewer) -->
+    <aside id="ar-modal" class="ar-modal hidden" aria-hidden="true">
+      <div class="ar-modal-header">
+        <div>
+          <span class="nutrition-subtitle">Realidad Aumentada · Escala Real 1:1</span>
+          <h2 id="ar-dish-title">Proyección sobre tu mesa</h2>
+        </div>
+        <button id="close-ar-btn" class="icon-btn" type="button" aria-label="Cerrar vista AR">✕</button>
+      </div>
+
+      <div class="ar-viewer-wrapper">
+        <model-viewer
+          id="ar-model-viewer"
+          src=""
+          alt="Modelo 3D en escala real para proyectar en mesa"
+          ar
+          ar-modes="webxr scene-viewer quick-look"
+          ar-scale="fixed"
+          ar-placement="floor"
+          camera-controls
+          touch-action="pan-y"
+          shadow-intensity="1"
+          shadow-softness="0.8"
+          exposure="1.1"
+        >
+          <button slot="ar-button" class="model-viewer-ar-slot-btn" type="button">
+            Activar Cámara AR en Mesa (1:1)
+          </button>
+        </model-viewer>
+      </div>
+
+      <div class="ar-modal-footer">
+        <div class="ar-meta-info">
+          <span>Tamaño físico fijo: <strong id="ar-dimensions-label">⌀ 24 cm · Altura 6 cm</strong></span>
+          <small>Compatible con Android (WebXR / Scene Viewer) e iOS (Quick Look)</small>
+        </div>
+        <button id="trigger-native-ar-btn" class="btn-primary" type="button">
+          <span>Proyectar en cámara ahora</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Modal de Comanda en Tiempo Real -->
+    <aside id="order-modal" class="order-modal hidden" aria-hidden="true">
+      <div class="nutrition-header">
+        <div>
+          <span class="nutrition-subtitle">Comanda Digital en Tiempo Real</span>
+          <h2>Enviar Pedido al Mesero</h2>
+        </div>
+        <button id="close-order-btn" class="icon-btn" type="button" aria-label="Cerrar comanda">✕</button>
+      </div>
+
+      <!-- Configuración de Mesa, Sector y Mesero -->
+      <div class="order-table-config">
+        <div class="config-field">
+          <label for="input-sector">Sector</label>
+          <select id="input-sector">
+            <option value="Terraza">Terraza</option>
+            <option value="Salón Principal">Salón Principal</option>
+            <option value="Barra">Barra</option>
+            <option value="Patio">Patio</option>
+          </select>
+        </div>
+        <div class="config-field">
+          <label for="input-mesa">Mesa</label>
+          <input id="input-mesa" type="text" value="4" />
+        </div>
+        <div class="config-field">
+          <label for="input-mesero">Mesero ID</label>
+          <input id="input-mesero" type="text" value="juan" />
+        </div>
+      </div>
+
+      <!-- Lista de platos en la comanda -->
+      <div id="order-items-list" class="order-items-list"></div>
+
+      <!-- Estado en vivo de la última comanda enviada -->
+      <div id="live-order-status" class="live-order-status hidden"></div>
+
+      <div class="order-summary-footer">
+        <div class="order-total-row">
+          <span>Total estimado</span>
+          <strong id="order-total-amount">Gs. 0</strong>
+        </div>
+
+        <div class="order-submit-actions">
+          <button id="modal-call-waiter-btn" class="btn-secondary" type="button">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+              <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+            </svg>
+            <span>Llamar Mesero</span>
+          </button>
+          <button id="send-comanda-btn" class="btn-primary" type="button">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="22" y1="2" x2="11" y2="13"></line>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+            </svg>
+            <span>Enviar Comanda</span>
+          </button>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Toast de notificación -->
+  <div id="toast-notification" class="toast hidden" role="status" aria-live="polite"></div>
+
+  <script type="module" src="./js/app.js"></script>
+</body>
+</html>
