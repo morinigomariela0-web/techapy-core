@@ -1,8 +1,11 @@
 {
   "tenant": "demo",
   "nombre": "TechaPY · Casa de Autor",
+  "ruc": "80094120-4",
   "ciudad": "Asunción, Paraguay",
   "moneda": "Gs.",
+  "plan": "Plan Restaurante de Autor",
+  "estado": "Activo",
   "adminPin": "1234",
   "waiterPin": "5678",
   "sectores": [

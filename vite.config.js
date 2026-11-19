@@ -136,6 +136,7 @@ export default defineConfig({
         mesero: resolve(__dirname, 'mesero.html'),
         adminMenu: resolve(__dirname, 'admin-menu.html'),
         adminQr: resolve(__dirname, 'admin-qr.html'),
+        superadmin: resolve(__dirname, 'superadmin.html'),
         terminos: resolve(__dirname, 'terminos.html'),
         privacidad: resolve(__dirname, 'privacidad.html')
       }

@@ -27,6 +27,8 @@ const PROD_LOG_PATH = path.join(LOGS_DIR, 'techapy-prod.log');
 const DEFAULT_TENANT = 'demo';
 const WS_MAGIC_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const AUTH_SECRET = process.env.TECHAPY_AUTH_SECRET || 'techapy-cloud-hmac-key-2026-py';
+const SUPERADMIN_MASTER_PIN =
+  process.env.TECHAPY_SUPERADMIN_PIN || process.env.SUPERADMIN_KEY || 'techapy2026';
 
 try {
   fs.mkdirSync(LOGS_DIR, { recursive: true });
@@ -179,41 +181,74 @@ function parseCookies(cookieHeader) {
 
 /**
  * Middleware de verificación de acceso por rol:
- * - role = 'waiter' -> valida `waiterPin` del tenant (para /mesero.html)
- * - role = 'admin'  -> valida `adminPin` del tenant (para /admin-menu.html y /admin-qr.html)
- * Soporta Cookie firmada HttpOnly, Basic Auth header, X-Auth-Pin header o query ?pin=.
+ * - role = 'waiter'     -> valida `waiterPin` del tenant (para /mesero.html)
+ * - role = 'admin'      -> valida `adminPin` del tenant (para /admin-menu.html y /admin-qr.html)
+ * - role = 'superadmin' -> valida `SUPERADMIN_MASTER_PIN` maestro (para /superadmin.html y /api/superadmin/*)
+ * Soporta Cookie firmada HttpOnly, Basic Auth / Bearer header, X-Superadmin-Key, X-Auth-Pin o query ?pin=.
  */
 function verifyRoleAuthentication(req, parsedUrl, rawTenant, requiredRole) {
-  const { tenant, nombre, adminPin, waiterPin } = getTenantSecurityConfig(rawTenant);
-  const expectedPin = requiredRole === 'admin' ? adminPin : waiterPin;
+  const isSuper = requiredRole === 'superadmin';
+  const sec = isSuper
+    ? {
+        tenant: 'global',
+        nombre: 'TechaPY · Plataforma Central SaaS',
+        adminPin: SUPERADMIN_MASTER_PIN,
+        waiterPin: SUPERADMIN_MASTER_PIN
+      }
+    : getTenantSecurityConfig(rawTenant);
+
+  const tenant = sec.tenant;
+  const nombre = sec.nombre;
+  const expectedPin = isSuper
+    ? SUPERADMIN_MASTER_PIN
+    : requiredRole === 'admin'
+    ? sec.adminPin
+    : sec.waiterPin;
   const expectedToken = createRoleAuthToken(tenant, requiredRole, expectedPin);
   const cookieName = `techapy_auth_${tenant}_${requiredRole}`;
+  const superCookieName = 'techapy_auth_global_superadmin';
+  const superToken = createRoleAuthToken('global', 'superadmin', SUPERADMIN_MASTER_PIN);
 
-  // 1. Verificar Cookie de sesión firmada
+  // 1. Verificar Cookie de sesión firmada (o cookie maestra de SuperAdmin que tiene acceso total)
   const cookies = parseCookies(req.headers.cookie);
-  if (cookies[cookieName] && cookies[cookieName] === expectedToken) {
+  if (
+    (cookies[cookieName] && cookies[cookieName] === expectedToken) ||
+    (cookies[superCookieName] && cookies[superCookieName] === superToken)
+  ) {
     return { authorized: true, tenant, nombre, cookieHeader: null };
   }
 
-  // 2. Verificar HTTP Basic Auth (Authorization: Basic base64(user:pin))
+  // 2. Verificar HTTP Basic Auth o Bearer Token
   const authHeader = req.headers['authorization'] || '';
   if (authHeader.toLowerCase().startsWith('basic ')) {
     try {
       const decoded = Buffer.from(authHeader.slice(6).trim(), 'base64').toString('utf8');
       const colonIdx = decoded.indexOf(':');
       const providedPin = colonIdx !== -1 ? decoded.slice(colonIdx + 1).trim() : decoded.trim();
-      if (providedPin === expectedPin) {
+      if (providedPin === expectedPin || providedPin === SUPERADMIN_MASTER_PIN) {
         const setCookie = `${cookieName}=${expectedToken}; HttpOnly; Path=/; Max-Age=43200; SameSite=Lax`;
         return { authorized: true, tenant, nombre, cookieHeader: setCookie };
       }
     } catch (_) {}
+  } else if (authHeader.toLowerCase().startsWith('bearer ')) {
+    const bearerVal = authHeader.slice(7).trim();
+    if (bearerVal === expectedPin || bearerVal === expectedToken || bearerVal === SUPERADMIN_MASTER_PIN) {
+      const setCookie = `${cookieName}=${expectedToken}; HttpOnly; Path=/; Max-Age=43200; SameSite=Lax`;
+      return { authorized: true, tenant, nombre, cookieHeader: setCookie };
+    }
   }
 
-  // 3. Verificar Header X-Auth-Pin o parámetro ?pin= en la URL
+  // 3. Verificar Header X-Superadmin-Key, X-Auth-Pin o parámetro ?pin= en la URL
   const providedInlinePin = String(
-    req.headers['x-auth-pin'] || parsedUrl.searchParams.get('pin') || ''
+    req.headers['x-superadmin-key'] ||
+      req.headers['x-auth-pin'] ||
+      parsedUrl.searchParams.get('pin') ||
+      ''
   ).trim();
-  if (providedInlinePin && providedInlinePin === expectedPin) {
+  if (
+    providedInlinePin &&
+    (providedInlinePin === expectedPin || providedInlinePin === SUPERADMIN_MASTER_PIN)
+  ) {
     const setCookie = `${cookieName}=${expectedToken}; HttpOnly; Path=/; Max-Age=43200; SameSite=Lax`;
     return { authorized: true, tenant, nombre, cookieHeader: setCookie };
   }
@@ -222,16 +257,243 @@ function verifyRoleAuthentication(req, parsedUrl, rawTenant, requiredRole) {
 }
 
 /**
+ * Lee y resume todos los tenants instalados en `data/tenants/`.
+ */
+function listAllTenantsSummary() {
+  fs.mkdirSync(TENANTS_DATA_DIR, { recursive: true });
+  const entries = fs.readdirSync(TENANTS_DATA_DIR, { withFileTypes: true });
+  const tenants = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const slug = sanitizeTenantId(entry.name);
+    const { configPath, menuPath } = getTenantPaths(slug);
+
+    let cfg = {};
+    try {
+      cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    } catch (_) {}
+
+    let platosCount = 0;
+    try {
+      const menuObj = JSON.parse(fs.readFileSync(menuPath, 'utf8'));
+      if (menuObj && Array.isArray(menuObj.platos)) {
+        platosCount = menuObj.platos.length;
+      }
+    } catch (_) {}
+
+    const sectores = Array.isArray(cfg.sectores) ? cfg.sectores : [];
+    const totalMesas = sectores.reduce((acc, s) => acc + (Number(s.mesas) || 0), 0);
+    const adminPin = String(
+      cfg.adminPin || (cfg.credenciales && cfg.credenciales.pinAcceso) || '1234'
+    ).trim();
+    const waiterPin = String(cfg.waiterPin || '5678').trim();
+
+    tenants.push({
+      tenant: slug,
+      nombre: cfg.nombre || `TechaPY · ${slug.toUpperCase()}`,
+      ruc: cfg.ruc || '80000000-0',
+      ciudad: cfg.ciudad || 'Asunción, Paraguay',
+      moneda: cfg.moneda || 'Gs.',
+      plan: cfg.plan || 'Plan Restaurante de Autor',
+      estado: cfg.estado === 'Suspendido' ? 'Suspendido' : 'Activo',
+      adminPin,
+      waiterPin,
+      sectores,
+      totalMesas,
+      totalPlatos: platosCount
+    });
+  }
+
+  tenants.sort((a, b) => a.tenant.localeCompare(b.tenant));
+  return tenants;
+}
+
+/**
+ * Aprovisiona un nuevo tenant creando sus carpetas data/tenants/{slug} y assets/tenants/{slug}/models
+ * de forma atómica, copiando la carta inicial y modelos 3D base.
+ */
+function provisionNewTenantAtomically(payload) {
+  const slug = sanitizeTenantId(payload.tenant);
+  if (!slug || slug === 'global') {
+    throw new Error('Slug de tenant inválido.');
+  }
+
+  const targetDataDir = path.join(TENANTS_DATA_DIR, slug);
+  const targetConfigPath = path.join(targetDataDir, 'config.json');
+  if (fs.existsSync(targetConfigPath)) {
+    const err = new Error(`El tenant "${slug}" ya existe.`);
+    err.statusCode = 409;
+    throw err;
+  }
+
+  const targetMenuPath = path.join(targetDataDir, 'menu-data.json');
+  const targetModelsDir = path.join(TENANTS_ASSETS_DIR, slug, 'models');
+
+  fs.mkdirSync(targetDataDir, { recursive: true });
+  fs.mkdirSync(targetModelsDir, { recursive: true });
+
+  // 1. Copiar modelos 3D base desde demo
+  const demoModelsDir = path.join(TENANTS_ASSETS_DIR, DEFAULT_TENANT, 'models');
+  if (fs.existsSync(demoModelsDir)) {
+    for (const file of fs.readdirSync(demoModelsDir)) {
+      const srcFile = path.join(demoModelsDir, file);
+      const dstFile = path.join(targetModelsDir, file);
+      if (fs.statSync(srcFile).isFile()) {
+        fs.copyFileSync(srcFile, dstFile);
+      }
+    }
+  }
+
+  // 2. Preparar menu-data.json inicial apuntando a ./assets/tenants/{slug}/models/
+  const demoMenuPath = path.join(TENANTS_DATA_DIR, DEFAULT_TENANT, 'menu-data.json');
+  const sourceMenuPath = fs.existsSync(demoMenuPath) ? demoMenuPath : MENU_FILE_PATH;
+  let initialMenu = { platos: [] };
+  if (fs.existsSync(sourceMenuPath)) {
+    try {
+      const rawMenu = fs.readFileSync(sourceMenuPath, 'utf8');
+      const replaced = rawMenu.replace(
+        /\.\/assets\/(?:tenants\/[a-z0-9_-]+\/)?models\//g,
+        `./assets/tenants/${slug}/models/`
+      );
+      initialMenu = JSON.parse(replaced);
+    } catch (_) {}
+  }
+  const formattedMenu = JSON.stringify(initialMenu, null, 2) + '\n';
+  writeJsonAtomically(targetMenuPath, formattedMenu);
+
+  // 3. Crear config.json del nuevo restaurante
+  const sectores =
+    Array.isArray(payload.sectores) && payload.sectores.length > 0
+      ? payload.sectores
+      : [
+          { sector: 'Terraza', mesas: 4, meseroNombre: 'Juan Pérez', meseroId: 'juan' },
+          { sector: 'Salón Principal', mesas: 6, meseroNombre: 'Lucía Gómez', meseroId: 'lucia' }
+        ];
+
+  const adminPin = String(payload.adminPin || '1234').trim();
+  const waiterPin = String(payload.waiterPin || '5678').trim();
+
+  const newConfig = {
+    tenant: slug,
+    nombre: String(payload.nombre || `TechaPY · ${slug.toUpperCase()}`).trim(),
+    ruc: String(payload.ruc || '80000000-0').trim(),
+    ciudad: String(payload.ciudad || 'Asunción, Paraguay').trim(),
+    moneda: String(payload.moneda || 'Gs.').trim(),
+    plan: String(payload.plan || 'Plan Restaurante de Autor').trim(),
+    estado: payload.estado === 'Suspendido' ? 'Suspendido' : 'Activo',
+    adminPin,
+    waiterPin,
+    sectores,
+    credenciales: {
+      usuario: `admin_${slug}`,
+      pinAcceso: adminPin
+    }
+  };
+
+  const formattedCfg = JSON.stringify(newConfig, null, 2) + '\n';
+  writeJsonAtomically(targetConfigPath, formattedCfg);
+
+  // 4. Sincronizar con dist/ si existe
+  if (fs.existsSync(DIST_DIR)) {
+    const distTenantDataDir = path.join(DIST_DIR, 'data', 'tenants', slug);
+    const distTenantModelsDir = path.join(DIST_DIR, 'assets', 'tenants', slug, 'models');
+    fs.mkdirSync(distTenantDataDir, { recursive: true });
+    fs.mkdirSync(distTenantModelsDir, { recursive: true });
+    writeJsonAtomically(path.join(distTenantDataDir, 'config.json'), formattedCfg);
+    writeJsonAtomically(path.join(distTenantDataDir, 'menu-data.json'), formattedMenu);
+    if (fs.existsSync(targetModelsDir)) {
+      for (const file of fs.readdirSync(targetModelsDir)) {
+        fs.copyFileSync(path.join(targetModelsDir, file), path.join(distTenantModelsDir, file));
+      }
+    }
+  }
+
+  return newConfig;
+}
+
+/**
+ * Actualiza de forma atómica la configuración, PINs o estado de un tenant existente.
+ */
+function updateExistingTenantAtomically(rawSlug, payload) {
+  const slug = sanitizeTenantId(rawSlug);
+  const { configPath } = getTenantPaths(slug);
+  let currentCfg = {};
+  try {
+    currentCfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch (_) {}
+
+  const adminPin = String(
+    payload.adminPin !== undefined ? payload.adminPin : currentCfg.adminPin || '1234'
+  ).trim();
+  const waiterPin = String(
+    payload.waiterPin !== undefined ? payload.waiterPin : currentCfg.waiterPin || '5678'
+  ).trim();
+
+  const updatedCfg = {
+    ...currentCfg,
+    tenant: slug,
+    nombre: String(payload.nombre || currentCfg.nombre || `TechaPY · ${slug.toUpperCase()}`).trim(),
+    ruc: String(payload.ruc !== undefined ? payload.ruc : currentCfg.ruc || '80000000-0').trim(),
+    ciudad: String(
+      payload.ciudad !== undefined ? payload.ciudad : currentCfg.ciudad || 'Asunción, Paraguay'
+    ).trim(),
+    moneda: String(payload.moneda || currentCfg.moneda || 'Gs.').trim(),
+    plan: String(
+      payload.plan !== undefined ? payload.plan : currentCfg.plan || 'Plan Restaurante de Autor'
+    ).trim(),
+    estado:
+      payload.estado !== undefined
+        ? payload.estado === 'Suspendido'
+          ? 'Suspendido'
+          : 'Activo'
+        : currentCfg.estado || 'Activo',
+    adminPin,
+    waiterPin,
+    sectores: Array.isArray(payload.sectores) ? payload.sectores : currentCfg.sectores || [],
+    credenciales: {
+      usuario: `admin_${slug}`,
+      pinAcceso: adminPin
+    }
+  };
+
+  const formattedCfg = JSON.stringify(updatedCfg, null, 2) + '\n';
+  writeJsonAtomically(configPath, formattedCfg);
+
+  if (fs.existsSync(DIST_DIR)) {
+    const distCfgPath = path.join(DIST_DIR, 'data', 'tenants', slug, 'config.json');
+    fs.mkdirSync(path.dirname(distCfgPath), { recursive: true });
+    writeJsonAtomically(distCfgPath, formattedCfg);
+  }
+
+  return updatedCfg;
+}
+
+/**
  * Renderiza el Modal de Login Unificado por Rol con código HTTP 401 Unauthorized
  * cuando se intenta acceder a /mesero.html, /admin-menu.html o /admin-qr.html sin autenticación.
  */
 function sendUnifiedRoleLoginModal(res, { tenant, nombre, requiredRole, reqUrl }) {
+  const isSuper = requiredRole === 'superadmin';
   const isWaiter = requiredRole === 'waiter';
-  const roleBadge = isWaiter ? 'ACCESO DE SALÓN · MESEROS' : 'ACCESO GERENCIAL · ADMINISTRADOR';
-  const roleTitle = isWaiter ? 'Consola de Comandas (Mesero)' : 'Panel de Administración & Placas QR';
-  const roleHint = isWaiter
+  const roleBadge = isSuper
+    ? 'SUPERADMIN · CONTROL CENTRAL MULTI-TENANT'
+    : isWaiter
+    ? 'ACCESO DE SALÓN · MESEROS'
+    : 'ACCESO GERENCIAL · ADMINISTRADOR';
+  const roleTitle = isSuper
+    ? 'Consola Central SuperAdmin'
+    : isWaiter
+    ? 'Consola de Comandas (Mesero)'
+    : 'Panel de Administración & Placas QR';
+  const roleHint = isSuper
+    ? 'Ingresa la contraseña maestra de SuperAdmin para gestionar todos los restaurantes (tenants), licencias y credenciales de TechaPY.'
+    : isWaiter
     ? 'Ingresa el PIN de Mesero asignado a tu local para recibir comandas y llamados de mesa en tiempo real.'
     : 'Ingresa el PIN de Administrador del restaurante para gestionar precios, modelos 3D e imprimir placas QR.';
+  const pinLabel = isSuper
+    ? 'Contraseña Maestra SuperAdmin'
+    : `PIN de Seguridad (${isWaiter ? 'waiterPin' : 'adminPin'})`;
 
   const html = `<!DOCTYPE html>
 <html lang="es">
@@ -424,8 +686,8 @@ function sendUnifiedRoleLoginModal(res, { tenant, nombre, requiredRole, reqUrl }
 
     <form id="pin-auth-form">
       <div>
-        <label for="pin-input">PIN de Seguridad (${isWaiter ? 'waiterPin' : 'adminPin'})</label>
-        <input id="pin-input" type="password" inputmode="numeric" autocomplete="current-password" placeholder="••••" required autofocus />
+        <label for="pin-input">${pinLabel}</label>
+        <input id="pin-input" type="password" autocomplete="current-password" placeholder="••••" required autofocus />
       </div>
       <div id="auth-error" class="error-msg" role="alert">PIN incorrecto. Verifica las credenciales del local.</div>
       <button type="submit" class="btn-submit">Desbloquear Acceso</button>
@@ -932,8 +1194,11 @@ function sendJsonResponse(res, statusCode, payload) {
  */
 const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Filename');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    'Content-Type, X-Filename, X-Auth-Pin, X-Superadmin-Key, Authorization'
+  );
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
@@ -944,23 +1209,34 @@ const server = http.createServer(async (req, res) => {
   const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   let pathname = decodeURIComponent(parsedUrl.pathname);
 
-  // 0. Endpoints de Autenticación Unificada por Rol (Mesero / Admin)
+  // 0. Endpoints de Autenticación Unificada por Rol (Mesero / Admin / SuperAdmin)
   if (pathname === '/api/auth/login' && req.method === 'POST') {
     try {
       const bodyBuf = await readRequestBodyBuffer(req, 64 * 1024);
       const payload = JSON.parse(bodyBuf.toString('utf8'));
-      const tenant = sanitizeTenantId(payload.tenant || DEFAULT_TENANT);
-      const role = payload.role === 'admin' ? 'admin' : 'waiter';
+      const role =
+        payload.role === 'superadmin'
+          ? 'superadmin'
+          : payload.role === 'admin'
+          ? 'admin'
+          : 'waiter';
+      const tenant = role === 'superadmin' ? 'global' : sanitizeTenantId(payload.tenant || DEFAULT_TENANT);
       const providedPin = String(payload.pin || '').trim();
 
-      const { adminPin, waiterPin } = getTenantSecurityConfig(tenant);
-      const expectedPin = role === 'admin' ? adminPin : waiterPin;
+      let expectedPin = SUPERADMIN_MASTER_PIN;
+      if (role !== 'superadmin') {
+        const sec = getTenantSecurityConfig(tenant);
+        expectedPin = role === 'admin' ? sec.adminPin : sec.waiterPin;
+      }
 
-      if (!providedPin || providedPin !== expectedPin) {
+      if (!providedPin || (providedPin !== expectedPin && providedPin !== SUPERADMIN_MASTER_PIN)) {
         logProdEvent('WARN', `Intento de login fallido para rol [${role}] en tenant [${tenant}]`);
         sendJsonResponse(res, 401, {
           ok: false,
-          error: `PIN de ${role === 'admin' ? 'Administrador' : 'Mesero'} inválido para el local "${tenant}".`
+          error:
+            role === 'superadmin'
+              ? 'Contraseña maestra de SuperAdmin inválida.'
+              : `PIN de ${role === 'admin' ? 'Administrador' : 'Mesero'} inválido para el local "${tenant}".`
         });
         return;
       }
@@ -988,12 +1264,82 @@ const server = http.createServer(async (req, res) => {
       'Content-Type': 'application/json; charset=utf-8',
       'Set-Cookie': [
         `techapy_auth_${tenant}_waiter=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax`,
-        `techapy_auth_${tenant}_admin=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax`
+        `techapy_auth_${tenant}_admin=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax`,
+        `techapy_auth_global_superadmin=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax`
       ],
       'Cache-Control': 'no-store'
     });
     res.end(JSON.stringify({ ok: true }));
     return;
+  }
+
+  // 0b. Endpoints de SuperAdmin (/api/superadmin/tenants y /api/superadmin/tenants/:tenant)
+  if (pathname === '/api/superadmin/tenants' || pathname.startsWith('/api/superadmin/tenants/')) {
+    const superAuth = verifyRoleAuthentication(req, parsedUrl, 'global', 'superadmin');
+    if (!superAuth.authorized) {
+      logProdEvent('WARN', `Acceso API SuperAdmin rechazado en ${req.method} ${pathname}`);
+      sendJsonResponse(res, 401, {
+        ok: false,
+        error: 'No autorizado. Se requiere autenticación de SuperAdmin (cookie o X-Superadmin-Key).'
+      });
+      return;
+    }
+
+    if (pathname === '/api/superadmin/tenants' && req.method === 'GET') {
+      try {
+        const tenants = listAllTenantsSummary();
+        sendJsonResponse(res, 200, { ok: true, count: tenants.length, tenants });
+      } catch (err) {
+        logProdEvent('ERROR', 'Error listando tenants en SuperAdmin', err.message);
+        sendJsonResponse(res, 500, { ok: false, error: err.message });
+      }
+      return;
+    }
+
+    if (pathname === '/api/superadmin/tenants' && req.method === 'POST') {
+      try {
+        const bodyBuf = await readRequestBodyBuffer(req, 2 * 1024 * 1024);
+        const payload = JSON.parse(bodyBuf.toString('utf8'));
+        const createdCfg = provisionNewTenantAtomically(payload);
+        logProdEvent(
+          'INFO',
+          `[SuperAdmin] Nuevo tenant aprovisionado: [${createdCfg.tenant}] (${createdCfg.nombre})`
+        );
+        sendJsonResponse(res, 201, {
+          ok: true,
+          message: `Restaurante "${createdCfg.nombre}" (${createdCfg.tenant}) aprovisionado correctamente`,
+          tenant: createdCfg
+        });
+      } catch (err) {
+        const code = err.statusCode || 400;
+        logProdEvent('WARN', '[SuperAdmin] Error creando tenant', err.message);
+        sendJsonResponse(res, code, { ok: false, error: err.message });
+      }
+      return;
+    }
+
+    const putMatch = pathname.match(/^\/api\/superadmin\/tenants\/([a-zA-Z0-9_-]+)$/);
+    if (putMatch && req.method === 'PUT') {
+      try {
+        const targetSlug = sanitizeTenantId(putMatch[1]);
+        const bodyBuf = await readRequestBodyBuffer(req, 2 * 1024 * 1024);
+        const payload = JSON.parse(bodyBuf.toString('utf8'));
+        const updatedCfg = updateExistingTenantAtomically(targetSlug, payload);
+        logProdEvent(
+          'INFO',
+          `[SuperAdmin] Tenant actualizado: [${updatedCfg.tenant}] (estado=${updatedCfg.estado})`
+        );
+        sendJsonResponse(res, 200, {
+          ok: true,
+          message: `Configuración de "${updatedCfg.nombre}" actualizada`,
+          tenant: updatedCfg
+        });
+      } catch (err) {
+        logProdEvent('ERROR', '[SuperAdmin] Error actualizando tenant', err.message);
+        sendJsonResponse(res, 400, { ok: false, error: err.message });
+      }
+      return;
+    }
   }
 
   // 1. Endpoint de información del servidor local y túnel HTTPS
@@ -1271,10 +1617,22 @@ const server = http.createServer(async (req, res) => {
   const activeTenant = sanitizeTenantId(parsedUrl.searchParams.get('tenant') || DEFAULT_TENANT);
   let requiredRole = null;
 
-  if (pathname === '/mesero.html') {
+  if (pathname === '/superadmin.html') {
+    requiredRole = 'superadmin';
+  } else if (pathname === '/mesero.html') {
     requiredRole = 'waiter';
   } else if (pathname === '/admin-menu.html' || pathname === '/admin-qr.html') {
     requiredRole = 'admin';
+  }
+
+  // Verificar si el servicio del tenant se encuentra Suspendido por el SuperAdmin
+  if (pathname === '/index.html' || pathname === '/mesero.html') {
+    const { rawConfig, nombre } = getTenantSecurityConfig(activeTenant);
+    if (rawConfig && rawConfig.estado === 'Suspendido') {
+      res.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/><title>Servicio Suspendido — TechaPY</title><style>body{background:#0e1013;color:#f4f4f6;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:20px;text-align:center}.box{max-width:440px;background:#15181e;border:1px solid rgba(197,160,89,0.35);border-radius:14px;padding:30px}h1{color:#d4af37;font-size:1.3rem;margin-bottom:10px}p{color:#989ea8;font-size:0.9rem;line-height:1.5}</style></head><body><div class="box"><h1>Servicio Temporalmente Suspendido</h1><p>La carta digital 3D del establecimiento <strong>${nombre}</strong> se encuentra temporalmente en mantenimiento o pausa administrativa.</p></div></body></html>`);
+      return;
+    }
   }
 
   let authCookieToSet = null;

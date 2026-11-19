@@ -1,8 +1,11 @@
 {
   "tenant": "resto1",
   "nombre": "La Cabrera · Asunción",
+  "ruc": "80112450-9",
   "ciudad": "Asunción, Paraguay",
   "moneda": "Gs.",
+  "plan": "Plan Restaurante de Autor",
+  "estado": "Activo",
   "adminPin": "1234",
   "waiterPin": "5678",
   "sectores": [
