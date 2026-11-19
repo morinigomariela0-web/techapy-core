@@ -6,20 +6,88 @@
  * - Genera y descarga el paquete masivo de placas QR listas para imprimir por restaurante.
  */
 
+const SA_PUBLIC_URL_KEY = 'techapy_sa_public_base_url';
+
 class SuperAdminController {
   constructor() {
     this.tenants = [];
     this.editingTenantSlug = null;
+    this.serverPublicBaseUrl = '';
 
     this.tbody = document.getElementById('sa-tenants-tbody');
     this.searchInput = document.getElementById('sa-search-input');
+    this.publicBaseUrlInput = document.getElementById('sa-public-base-url');
     this.statusFilter = document.getElementById('sa-status-filter');
     this.modal = document.getElementById('sa-tenant-modal');
     this.form = document.getElementById('sa-tenant-form');
     this.sectorsListEl = document.getElementById('sa-modal-sectors-list');
 
+    this.initPublicBaseUrlField();
     this.bindEvents();
     this.fetchTenants();
+  }
+
+  isPrivateOrLocalUrl(rawUrl) {
+    const s = String(rawUrl || '').trim().toLowerCase();
+    if (!s) return true;
+    return /(?:^|\/\/)(?:localhost|127\.0\.0\.1|0\.0\.0\.0|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+)(?::\d+)?(?:\/|$)/i.test(
+      s
+    );
+  }
+
+  sanitizeBaseUrl(rawUrl) {
+    const origin = window.location.origin.replace(/\/+$/, '');
+    let clean = String(rawUrl || '').trim();
+    if (!clean) return origin;
+    clean = clean.replace(/\/[a-z0-9_-]+\.html.*/i, '');
+    clean = clean.replace(/[?#].*$/, '');
+    clean = clean.replace(/\/+$/, '');
+    if (!this.isPrivateOrLocalUrl(origin) && this.isPrivateOrLocalUrl(clean)) {
+      return origin;
+    }
+    return clean || origin;
+  }
+
+  initPublicBaseUrlField() {
+    if (!this.publicBaseUrlInput) return;
+    const origin = window.location.origin.replace(/\/+$/, '');
+    let initialUrl = origin;
+
+    try {
+      const saved = localStorage.getItem(SA_PUBLIC_URL_KEY);
+      if (saved && !this.isPrivateOrLocalUrl(saved)) {
+        initialUrl = this.sanitizeBaseUrl(saved);
+      }
+    } catch (_) {}
+
+    if (!this.isPrivateOrLocalUrl(origin)) {
+      initialUrl = origin;
+    }
+
+    this.publicBaseUrlInput.value = initialUrl;
+    this.publicBaseUrlInput.addEventListener('change', () => {
+      const cleaned = this.sanitizeBaseUrl(this.publicBaseUrlInput.value);
+      this.publicBaseUrlInput.value = cleaned;
+      try {
+        localStorage.setItem(SA_PUBLIC_URL_KEY, cleaned);
+      } catch (_) {}
+      this.showToast(`✓ URL Base para paquetes QR actualizada: ${cleaned}`);
+    });
+  }
+
+  getEffectiveQRBaseUrl(tenantObj = null) {
+    const inputVal = this.publicBaseUrlInput ? this.sanitizeBaseUrl(this.publicBaseUrlInput.value) : '';
+    const serverVal = this.sanitizeBaseUrl(
+      (tenantObj && tenantObj.publicBaseUrl) || this.serverPublicBaseUrl || ''
+    );
+    const origin = window.location.origin.replace(/\/+$/, '');
+
+    // Priorizar URL pública Cloud sobre cualquier IP privada 192.168.*
+    if (inputVal && !this.isPrivateOrLocalUrl(inputVal)) return inputVal;
+    if (serverVal && !this.isPrivateOrLocalUrl(serverVal)) return serverVal;
+    if (!this.isPrivateOrLocalUrl(origin)) return origin;
+
+    return inputVal || serverVal || origin;
   }
 
   bindEvents() {
@@ -88,6 +156,15 @@ class SuperAdminController {
       const data = await res.json();
       if (!res.ok || !data.ok) {
         throw new Error((data && data.error) || 'No se pudo cargar el listado de tenants');
+      }
+      if (data.publicBaseUrl && !this.isPrivateOrLocalUrl(data.publicBaseUrl)) {
+        this.serverPublicBaseUrl = this.sanitizeBaseUrl(data.publicBaseUrl);
+        if (this.publicBaseUrlInput && this.isPrivateOrLocalUrl(this.publicBaseUrlInput.value)) {
+          this.publicBaseUrlInput.value = this.serverPublicBaseUrl;
+          try {
+            localStorage.setItem(SA_PUBLIC_URL_KEY, this.serverPublicBaseUrl);
+          } catch (_) {}
+        }
       }
       this.tenants = Array.isArray(data.tenants) ? data.tenants : [];
       this.updateKPIs();
@@ -474,7 +551,7 @@ class SuperAdminController {
 
   async downloadMassiveQRPackage(tenantObj) {
     try {
-      const baseOrigin = window.location.origin.replace(/\/+$/, '');
+      const baseOrigin = this.getEffectiveQRBaseUrl(tenantObj);
       const sectors = Array.isArray(tenantObj.sectores) ? tenantObj.sectores : [];
       const cardsHtml = [];
       let globalTable = 1;
@@ -510,6 +587,7 @@ class SuperAdminController {
                 <img src="${qrDataUrl}" alt="QR Mesa ${tableNum}" width="180" height="180" />
               </div>
               <div class="badge">TECHAPY · MENÚ 3D &amp; AR ESCALA 1:1</div>
+              <div style="font-size:0.6rem;color:#c5a059;font-weight:700;margin-bottom:2px;">URL GRABADA EN QR:</div>
               <div class="url">${this.escapeHtml(qrTargetUrl)}</div>
             </article>
           `);

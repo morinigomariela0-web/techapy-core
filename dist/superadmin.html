@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Playfair+Display:ital,wght@0,500;0,600;0,700;1,400&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <script src="./js/vendor/qrcode.min.js"></script>
-  <script type="module" crossorigin src="/assets/superadmin-MHfwG7--.js"></script>
+  <script type="module" crossorigin src="/assets/superadmin-RJzE6qku.js"></script>
   <link rel="modulepreload" crossorigin href="/assets/modulepreload-polyfill-B5Qt9EMX.js">
   <link rel="stylesheet" crossorigin href="/assets/superadmin-RcKhfcPl.css">
 </head>
@@ -76,7 +76,7 @@
       </article>
     </section>
 
-    <!-- Barra de Herramientas y Búsqueda -->
+    <!-- Barra de Herramientas, URL Pública de QR (Render) y Búsqueda -->
     <section class="sa-toolbar">
       <div class="sa-search-box">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -84,6 +84,11 @@
           <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
         </svg>
         <input id="sa-search-input" type="search" placeholder="Filtrar por nombre del local, slug, RUC o ciudad..." />
+      </div>
+
+      <div class="sa-search-box" style="max-width: 380px;" title="URL Pública Estática de Render que se grabará en todos los paquetes QR descargados">
+        <span style="font-size: 0.72rem; font-weight: 700; color: #d4af37; white-space: nowrap;">URL QR (Render):</span>
+        <input id="sa-public-base-url" type="url" placeholder="https://techapy-core.onrender.com" />
       </div>
 
       <div class="sa-filter-group">

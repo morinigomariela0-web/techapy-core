@@ -57,6 +57,13 @@ class AdminQRGenerator {
         this.sectors = cfg.sectores;
         this.renderSectorRows();
       }
+      // Si el tenant o Render provee publicBaseUrl y el input actual tiene una IP privada (192.168.* / localhost), priorizar la URL pública Cloud
+      if (cfg && cfg.publicBaseUrl && !this.isPrivateOrLocalUrl(cfg.publicBaseUrl)) {
+        const currentVal = this.sanitizeBaseUrl(this.baseUrlInput.value);
+        if (!currentVal || this.isPrivateOrLocalUrl(currentVal)) {
+          this.baseUrlInput.value = this.sanitizeBaseUrl(cfg.publicBaseUrl);
+        }
+      }
       this.updateNavLinks(tenant);
       this.renderSubscriptionExpirationBanner(cfg);
       await this.generateAllQRCards();
@@ -134,6 +141,17 @@ class AdminQRGenerator {
   }
 
   /**
+   * Detecta si una URL apunta a una IP privada de red local (192.168.*, 10.*, 172.16-31.*) o localhost.
+   */
+  isPrivateOrLocalUrl(rawUrl) {
+    const s = String(rawUrl || '').trim().toLowerCase();
+    if (!s) return true;
+    return /(?:^|\/\/)(?:localhost|127\.0\.0\.1|0\.0\.0\.0|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+)(?::\d+)?(?:\/|$)/i.test(
+      s
+    );
+  }
+
+  /**
    * Limpia cualquier URL base para garantizar que nunca incluya `admin-qr.html`,
    * otros archivos `.html`, parámetros `?query` residuales ni barras finales.
    */
@@ -149,6 +167,11 @@ class AdminQRGenerator {
     // Asegurar que termine sin barra para concatenar correctamente
     baseUrl = baseUrl.replace(/\/+$/, '');
 
+    // Si estamos corriendo en producción (ej. Render https://*.onrender.com) y baseUrl es una IP privada 192.168.*, forzar el origen público
+    if (!this.isPrivateOrLocalUrl(origin) && this.isPrivateOrLocalUrl(baseUrl)) {
+      baseUrl = origin.replace(/\/+$/, '');
+    }
+
     return baseUrl || origin.replace(/\/+$/, '');
   }
 
@@ -159,7 +182,7 @@ class AdminQRGenerator {
     const origin = window.location.origin;
     let baseUrl = (this.baseUrlInput && this.baseUrlInput.value) || origin;
 
-    // Limpiar si baseUrl termina accidentalmente en admin-qr.html o incluye parámetros
+    // Limpiar si baseUrl termina accidentalmente en admin-qr.html o incluye parámetros o IP privada en producción
     baseUrl = this.sanitizeBaseUrl(baseUrl);
 
     const qrUrl = `${baseUrl}/index.html?tenant=${encodeURIComponent(
@@ -172,64 +195,71 @@ class AdminQRGenerator {
   }
 
   /**
-   * Consulta `/api/server-info` del servidor integrado (`server.js` / `server.py`)
-   * para obtener la URL pública HTTPS del túnel (`cloudflared`) o la IP LAN Wi-Fi real.
+   * Consulta `/api/server-info` del servidor integrado (`server.js`)
+   * para obtener la URL pública de Render (`PUBLIC_BASE_URL` / `RENDER_EXTERNAL_URL`) o dominio cloud.
    */
   async detectLanIpFromServer() {
     const hintEl = document.getElementById('detected-ip-hint');
-    const embeddedTunnelUrl = this.sanitizeBaseUrl(this.baseUrlInput.dataset.tunnelUrl || '');
+    const origin = this.getDetectedBaseUrl();
 
-    if (embeddedTunnelUrl && embeddedTunnelUrl.startsWith('https://')) {
-      this.baseUrlInput.value = embeddedTunnelUrl;
-      this.saveConfiguration();
-      await this.generateAllQRCards();
+    // Si ya estamos en un dominio público Cloud (ej. Render), fijarlo de inmediato y descartar cualquier 192.168.*
+    if (!this.isPrivateOrLocalUrl(origin)) {
+      if (this.isPrivateOrLocalUrl(this.baseUrlInput.value)) {
+        this.baseUrlInput.value = origin;
+        this.saveConfiguration();
+        await this.generateAllQRCards();
+      }
+      if (hintEl) {
+        hintEl.innerHTML = `✓ Producción Cloud Activa (Independiente de PC): <strong>${this.sanitizeBaseUrl(this.baseUrlInput.value)}</strong>`;
+      }
     }
 
     try {
-      const res = await fetch('./api/server-info');
+      const res = await fetch('./api/server-info', { cache: 'no-store' });
       if (!res.ok) return;
       const info = await res.json();
-      if (info && info.publicUrl) {
-        const cleanPublic = this.sanitizeBaseUrl(info.publicUrl);
-        this.baseUrlInput.value = cleanPublic;
-        this.saveConfiguration();
-        await this.generateAllQRCards();
+      const cloudUrl = this.sanitizeBaseUrl(info && (info.publicBaseUrl || info.publicUrl || ''));
+
+      if (cloudUrl && !this.isPrivateOrLocalUrl(cloudUrl)) {
+        if (!this.baseUrlInput.value || this.isPrivateOrLocalUrl(this.baseUrlInput.value)) {
+          this.baseUrlInput.value = cloudUrl;
+          this.saveConfiguration();
+          await this.generateAllQRCards();
+        }
         if (hintEl) {
-          hintEl.innerHTML = `Túnel HTTPS Público Activo (WebXR / AR Ready): <strong>${cleanPublic}</strong> · LAN: <code>${info.lanBaseUrl || info.lanIp}</code>`;
+          hintEl.innerHTML = `✓ URL Pública Cloud (Render / Estática) activa: <strong>${this.sanitizeBaseUrl(this.baseUrlInput.value)}</strong> (Los QR funcionan 24/7 sin depender de la PC)`;
         }
         return;
       }
 
       if (info && info.baseUrl) {
         const currentVal = this.sanitizeBaseUrl(this.baseUrlInput.value);
-        const isLocalhost =
-          !currentVal ||
-          currentVal.includes('localhost') ||
-          currentVal.includes('127.0.0.1');
-
-        const preferredBase =
-          window.location.protocol === 'https:' && info.lanIp
-            ? `https://${info.lanIp}:${window.location.port || 5173}`
-            : this.sanitizeBaseUrl(info.baseUrl);
-
-        if (isLocalhost) {
+        // Nunca sobrescribir una URL pública de Render con una IP local 192.168.*
+        if (!currentVal || currentVal.includes('localhost') || currentVal.includes('127.0.0.1')) {
+          const preferredBase =
+            window.location.protocol === 'https:' && info.lanIp
+              ? `https://${info.lanIp}:${window.location.port || 5173}`
+              : this.sanitizeBaseUrl(info.baseUrl);
           this.baseUrlInput.value = preferredBase;
           await this.generateAllQRCards();
         }
         if (hintEl) {
-          hintEl.innerHTML = `IP Wi-Fi Local detectada automáticamente: <strong>${preferredBase}</strong> (Host actual: <code>${window.location.origin}</code>)`;
+          if (!this.isPrivateOrLocalUrl(this.baseUrlInput.value)) {
+            hintEl.innerHTML = `✓ URL Pública Cloud configurada: <strong>${this.sanitizeBaseUrl(this.baseUrlInput.value)}</strong> (Independiente de la PC)`;
+          } else {
+            hintEl.innerHTML = `⚠️ Modo Red Local (${this.sanitizeBaseUrl(this.baseUrlInput.value)}). Para que los QR no dependan de tu PC, pega arriba tu URL de Render (ej. <code>https://tu-app.onrender.com</code>).`;
+          }
         }
       }
     } catch (_) {
       if (hintEl) {
-        hintEl.innerHTML = `Host detectado: <strong>${window.location.origin}</strong>. Para escanear desde celulares, usa el túnel HTTPS o la IP local.`;
+        hintEl.innerHTML = `URL activa para QR: <strong>${this.sanitizeBaseUrl(this.baseUrlInput.value || origin)}</strong>.`;
       }
     }
   }
 
   loadSavedConfiguration() {
-    const embeddedTunnelUrl = this.sanitizeBaseUrl(this.baseUrlInput.dataset.tunnelUrl || '');
-    const currentOrigin = embeddedTunnelUrl || this.getDetectedBaseUrl();
+    const currentOrigin = this.getDetectedBaseUrl();
     this.baseUrlInput.value = currentOrigin;
 
     try {
@@ -242,14 +272,12 @@ class AdminQRGenerator {
             .replace(/Moopio 3D/gi, 'TechaPY')
             .replace(/Kuroshio 3D Izakaya/gi, 'TechaPY · Casa de Autor');
         }
-        if (embeddedTunnelUrl && embeddedTunnelUrl.startsWith('https://')) {
-          this.baseUrlInput.value = embeddedTunnelUrl;
-        } else if (
-          parsed.baseUrl &&
-          !parsed.baseUrl.includes('localhost') &&
-          !parsed.baseUrl.includes('127.0.0.1')
-        ) {
-          this.baseUrlInput.value = this.sanitizeBaseUrl(parsed.baseUrl);
+        const savedBase = parsed.baseUrl ? this.sanitizeBaseUrl(parsed.baseUrl) : '';
+        // Si estamos en Render/Cloud, ignorar cualquier IP privada 192.168.* guardada previamente en localStorage
+        if (savedBase && !this.isPrivateOrLocalUrl(savedBase)) {
+          this.baseUrlInput.value = savedBase;
+        } else if (this.isPrivateOrLocalUrl(currentOrigin) && savedBase && !savedBase.includes('localhost') && !savedBase.includes('127.0.0.1')) {
+          this.baseUrlInput.value = savedBase;
         } else {
           this.baseUrlInput.value = currentOrigin;
         }
@@ -409,6 +437,7 @@ class AdminQRGenerator {
               <span>SECTOR: <strong>${this.escapeHtml(sectorCfg.sector)}</strong></span>
               <span>STAFF: <strong>${this.escapeHtml(sectorCfg.meseroId.toUpperCase())}</strong></span>
             </div>
+            <div style="font-size:0.62rem;color:#c5a059;font-weight:700;letter-spacing:0.05em;margin-top:2px;">URL GRABADA EN QR:</div>
             <a class="qr-url-preview" href="${targetUrl}" target="_blank" rel="noopener">${targetUrl}</a>
           </div>
         `;
@@ -420,8 +449,12 @@ class AdminQRGenerator {
       }
     }
 
+    const activeBase = this.sanitizeBaseUrl(this.baseUrlInput.value);
     if (this.summaryTextEl) {
-      this.summaryTextEl.textContent = `✓ ${totalCards} placas QR generadas para ${this.sectors.length} sector(es) en "${restaurantName}".`;
+      const modeTag = this.isPrivateOrLocalUrl(activeBase)
+        ? '⚠️ IP Local'
+        : '☁️ URL Pública Cloud (Render)';
+      this.summaryTextEl.textContent = `✓ ${totalCards} placas QR generadas para "${restaurantName}" → ${modeTag}: ${activeBase}/index.html`;
     }
   }
 

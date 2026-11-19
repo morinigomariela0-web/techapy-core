@@ -46,6 +46,74 @@ const DEFAULT_SALES_WHATSAPP = normalizeParaguayWhatsapp(
   '595972736447'
 );
 
+/**
+ * Determina si una URL o host corresponde a una IP privada de red local o loopback.
+ */
+function isPrivateOrLocalUrl(rawUrl) {
+  const s = String(rawUrl || '').trim().toLowerCase();
+  if (!s) return true;
+  return /(?:^|\/\/)(?:localhost|127\.0\.0\.1|0\.0\.0\.0|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+)(?::\d+)?(?:\/|$)/i.test(
+    s
+  );
+}
+
+/**
+ * Normaliza una URL base pública (sin barras finales, archivos .html ni parámetros ?query).
+ */
+function sanitizePublicBaseUrl(rawUrl) {
+  let clean = String(rawUrl || '').trim();
+  if (!clean) return '';
+  clean = clean.replace(/\/[a-z0-9_-]+\.html.*/i, '');
+  clean = clean.replace(/[?#].*$/, '');
+  clean = clean.replace(/\/+$/, '');
+  return clean;
+}
+
+/**
+ * Resuelve la URL pública de producción (Render / Cloud) priorizando:
+ * 1. process.env.PUBLIC_BASE_URL o process.env.RENDER_EXTERNAL_URL
+ * 2. cfg.publicBaseUrl (si no es IP privada)
+ * 3. El Host público de la petición HTTP entrante (ej. https://*.onrender.com)
+ * 4. data/tunnel-info.json (si existe y no es IP privada)
+ */
+function resolvePublicBaseUrl(req = null, cfg = {}) {
+  const envUrl = sanitizePublicBaseUrl(
+    process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || ''
+  );
+  if (envUrl && !isPrivateOrLocalUrl(envUrl)) {
+    return envUrl;
+  }
+
+  const cfgUrl = sanitizePublicBaseUrl(cfg && cfg.publicBaseUrl);
+  if (cfgUrl && !isPrivateOrLocalUrl(cfgUrl)) {
+    return cfgUrl;
+  }
+
+  if (req && req.headers) {
+    const rawHost = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
+    const rawProto = String(req.headers['x-forwarded-proto'] || 'https').split(',')[0].trim();
+    if (rawHost) {
+      const candidate = sanitizePublicBaseUrl(`${rawProto}://${rawHost}`);
+      if (candidate && !isPrivateOrLocalUrl(candidate)) {
+        return candidate;
+      }
+    }
+  }
+
+  const tunnelInfoPath = path.join(ROOT_DIR, 'data', 'tunnel-info.json');
+  if (fs.existsSync(tunnelInfoPath)) {
+    try {
+      const tdata = JSON.parse(fs.readFileSync(tunnelInfoPath, 'utf8'));
+      const tUrl = sanitizePublicBaseUrl(tdata && tdata.publicUrl);
+      if (tUrl && !isPrivateOrLocalUrl(tUrl)) {
+        return tUrl;
+      }
+    } catch (_) {}
+  }
+
+  return envUrl || cfgUrl || '';
+}
+
 function normalizeTenantEstado(rawEstado) {
   const s = String(rawEstado || 'Activo').trim().toLowerCase();
   if (s === 'pendiente') return 'pendiente';
@@ -313,7 +381,7 @@ function verifyRoleAuthentication(req, parsedUrl, rawTenant, requiredRole) {
 /**
  * Lee y resume todos los tenants instalados en `data/tenants/`.
  */
-function listAllTenantsSummary() {
+function listAllTenantsSummary(req = null) {
   fs.mkdirSync(TENANTS_DATA_DIR, { recursive: true });
   const entries = fs.readdirSync(TENANTS_DATA_DIR, { withFileTypes: true });
   const tenants = [];
@@ -343,6 +411,7 @@ function listAllTenantsSummary() {
     ).trim();
     const waiterPin = String(cfg.waiterPin || '5678').trim();
     const subInfo = computeSubscriptionStatus(cfg);
+    const publicBaseUrl = resolvePublicBaseUrl(req, cfg);
 
     tenants.push({
       tenant: slug,
@@ -352,6 +421,7 @@ function listAllTenantsSummary() {
       moneda: cfg.moneda || 'Gs.',
       plan: cfg.plan || 'Plan Restaurante de Autor',
       estado: normalizeTenantEstado(cfg.estado),
+      publicBaseUrl,
       fechaSolicitud: cfg.fechaSolicitud || null,
       contactoNombre: cfg.contactoNombre || '',
       contactoWhatsapp: cfg.contactoWhatsapp || '',
@@ -560,6 +630,9 @@ function updateExistingTenantAtomically(rawSlug, payload) {
     estado: nextEstado,
     ultimoPago: nextUltimoPago,
     fechaVencimiento: new Date(nextFechaVencimiento).toISOString(),
+    publicBaseUrl: sanitizePublicBaseUrl(
+      payload.publicBaseUrl !== undefined ? payload.publicBaseUrl : currentCfg.publicBaseUrl || ''
+    ),
     salesWhatsapp: currentCfg.salesWhatsapp || DEFAULT_SALES_WHATSAPP,
     adminPin,
     waiterPin,
@@ -1400,8 +1473,9 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === '/api/superadmin/tenants' && req.method === 'GET') {
       try {
-        const tenants = listAllTenantsSummary();
-        sendJsonResponse(res, 200, { ok: true, count: tenants.length, tenants });
+        const tenants = listAllTenantsSummary(req);
+        const publicBaseUrl = resolvePublicBaseUrl(req);
+        sendJsonResponse(res, 200, { ok: true, count: tenants.length, publicBaseUrl, tenants });
       } catch (err) {
         logProdEvent('ERROR', 'Error listando tenants en SuperAdmin', err.message);
         sendJsonResponse(res, 500, { ok: false, error: err.message });
@@ -1533,23 +1607,15 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 1. Endpoint de información del servidor local y túnel HTTPS
+  // 1. Endpoint de información del servidor local y URL pública Cloud (Render)
   if (pathname === '/api/server-info' && req.method === 'GET') {
     const lanIp = getLocalLanIp();
     const lanBaseUrl = `http://${lanIp}:${PORT}`;
-    let publicUrl = null;
-    const tunnelInfoPath = path.join(ROOT_DIR, 'data', 'tunnel-info.json');
-    if (fs.existsSync(tunnelInfoPath)) {
-      try {
-        const tdata = JSON.parse(fs.readFileSync(tunnelInfoPath, 'utf8'));
-        if (tdata && tdata.publicUrl) {
-          publicUrl = String(tdata.publicUrl).replace(/\/+$/, '');
-        }
-      } catch (_) {}
-    }
-    const effectiveBase = publicUrl || lanBaseUrl;
-    const effectiveWs = publicUrl
-      ? `wss://${publicUrl.replace(/^https?:\/\//, '')}/ws`
+    const publicBaseUrl = resolvePublicBaseUrl(req);
+    const publicUrl = publicBaseUrl || null;
+    const effectiveBase = publicBaseUrl || lanBaseUrl;
+    const effectiveWs = publicBaseUrl
+      ? `${publicBaseUrl.startsWith('https') ? 'wss' : 'ws'}://${publicBaseUrl.replace(/^https?:\/\//, '')}/ws`
       : `ws://${lanIp}:${PORT}/ws`;
 
     sendJsonResponse(res, 200, {
@@ -1557,6 +1623,7 @@ const server = http.createServer(async (req, res) => {
       port: PORT,
       lanBaseUrl,
       publicUrl,
+      publicBaseUrl: publicBaseUrl || null,
       baseUrl: effectiveBase,
       wsUrl: effectiveWs,
       activeOrdersCount: activeOrders.length
@@ -1571,7 +1638,7 @@ const server = http.createServer(async (req, res) => {
     : sanitizeTenantId(parsedUrl.searchParams.get('tenant') || DEFAULT_TENANT);
   const routeAction = tenantRouteMatch ? tenantRouteMatch[2] : null;
 
-  // 1b. GET /api/:tenant/config (o GET /api/config?tenant=...) -> Oculta los PINs de seguridad e incluye estado de vencimiento
+  // 1b. GET /api/:tenant/config (o GET /api/config?tenant=...) -> Oculta los PINs de seguridad e incluye estado de vencimiento y publicBaseUrl
   if ((routeAction === 'config' || pathname === '/api/config') && req.method === 'GET') {
     const { configPath } = getTenantPaths(routeTenant);
     fs.readFile(configPath, 'utf8', (err, content) => {
@@ -1582,6 +1649,7 @@ const server = http.createServer(async (req, res) => {
       try {
         const publicCfg = JSON.parse(content);
         const subInfo = computeSubscriptionStatus(publicCfg);
+        const resolvedPublicUrl = resolvePublicBaseUrl(req, publicCfg);
         publicCfg.estado = normalizeTenantEstado(publicCfg.estado);
         publicCfg.ultimoPago = subInfo.ultimoPago;
         publicCfg.fechaVencimiento = subInfo.fechaVencimiento;
@@ -1589,6 +1657,7 @@ const server = http.createServer(async (req, res) => {
         publicCfg.porVencer = subInfo.porVencer;
         publicCfg.vencido = subInfo.vencido;
         publicCfg.salesWhatsapp = subInfo.salesWhatsapp;
+        publicCfg.publicBaseUrl = resolvedPublicUrl || publicCfg.publicBaseUrl || null;
         delete publicCfg.adminPin;
         delete publicCfg.waiterPin;
         if (publicCfg.credenciales) {

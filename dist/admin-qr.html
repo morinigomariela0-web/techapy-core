@@ -9,7 +9,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Playfair+Display:ital,wght@0,500;0,600;0,700;1,400&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <!-- Biblioteca generadora de códigos QR local offline (ISO/IEC 18004) sin dependencia de CDN -->
   <script src="./js/vendor/qrcode.min.js"></script>
-  <script type="module" crossorigin src="/assets/adminQr-PNFIJVbp.js"></script>
+  <script type="module" crossorigin src="/assets/adminQr-BJxnfWdA.js"></script>
   <link rel="modulepreload" crossorigin href="/assets/modulepreload-polyfill-B5Qt9EMX.js">
   <link rel="stylesheet" crossorigin href="/assets/adminQr-D-xVREWY.css">
 </head>
@@ -64,15 +64,14 @@
         </div>
 
         <div class="form-group">
-          <label for="base-url">URL Base / Túnel HTTPS o IP Local</label>
+          <label for="base-url">URL Base Pública (Render Cloud / Dominio Propio)</label>
           <input
             id="base-url"
             type="url"
-            value="https://192.168.100.7:5173"
-            data-tunnel-url="https://192.168.100.7:5173"
-            placeholder="https://xxxx.trycloudflare.com"
+            value=""
+            placeholder="https://techapy-core.onrender.com"
           />
-          <small id="detected-ip-hint" class="field-hint">Autocompletado con el túnel HTTPS público o IP Wi-Fi local.</small>
+          <small id="detected-ip-hint" class="field-hint">Detectando URL pública de producción (Render / Cloud)...</small>
         </div>
 
         <div class="form-group">
