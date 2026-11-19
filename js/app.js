@@ -68,6 +68,10 @@ export class Menu3DApp {
     this.baseRotationSpeed = 0.18;
 
     this.clock = new THREE.Clock();
+    this.perfProfile = this.detectPerformanceProfile();
+    if (this.perfProfile.isLite) {
+      document.body.classList.add('perf-lite');
+    }
 
     this.initScene();
     this.initLights();
@@ -81,8 +85,28 @@ export class Menu3DApp {
   }
 
   /**
-   * a) Inicializa la escena Three.js limitando el pixelRatio a máximo 2
-   * para ahorrar memoria y batería en dispositivos móviles.
+   * Detecta capacidades de hardware y red (CPU, RAM, saveData, 2G/3G, prefers-reduced-motion)
+   * para adaptar pixelRatio (1 en gama baja/saveData, máx 1.5 en gama alta) y fluidez táctil.
+   */
+  detectPerformanceProfile() {
+    const cores = Number(navigator.hardwareConcurrency) || 4;
+    const memory = Number(navigator.deviceMemory) || 4;
+    const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    const saveData = Boolean(conn && conn.saveData);
+    const slowNet = Boolean(conn && ['slow-2g', '2g', '3g'].includes(conn.effectiveType));
+    const reducedMotion =
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    const isLite = saveData || slowNet || cores <= 4 || memory <= 3 || reducedMotion;
+    const maxPixelRatio = isLite ? 1 : Math.min(window.devicePixelRatio || 1, 1.5);
+
+    return { isLite, maxPixelRatio, reducedMotion };
+  }
+
+  /**
+   * a) Inicializa la escena Three.js limitando el pixelRatio de forma adaptativa (1 a 1.5)
+   * para ahorrar memoria VRAM y batería en todo tipo de dispositivos móviles.
    */
   initScene() {
     this.scene = new THREE.Scene();
@@ -99,13 +123,13 @@ export class Menu3DApp {
     this.camera.position.copy(this.targetCameraPos);
 
     this.renderer = new THREE.WebGLRenderer({
-      antialias: true,
+      antialias: !this.perfProfile.isLite,
       alpha: true,
       powerPreference: 'high-performance'
     });
     this.renderer.setClearColor(0x000000, 0);
     this.renderer.setSize(width, height);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(this.perfProfile.maxPixelRatio);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.15;
@@ -253,11 +277,36 @@ export class Menu3DApp {
     });
 
     window.addEventListener('online', () => {
-      this.wsReconnectAttempts = 0;
-      this.connectWebSocket();
+      this.forceReconnectWebSocket();
     });
 
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) {
+        this.forceReconnectWebSocket();
+      }
+    });
+
+    const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    if (conn && typeof conn.addEventListener === 'function') {
+      conn.addEventListener('change', () => {
+        this.forceReconnectWebSocket();
+      });
+    }
+
     this.connectWebSocket();
+  }
+
+  /**
+   * Fuerza una reconexión limpia de WebSocket ante cambios de red (Wi-Fi <-> Datos móviles 4G/5G)
+   * o al despertar la pantalla del teléfono.
+   */
+  forceReconnectWebSocket() {
+    this.wsReconnectAttempts = 0;
+    if (this.ws && this.ws.readyState !== WebSocket.OPEN && this.ws.readyState !== WebSocket.CONNECTING) {
+      this.connectWebSocket();
+    } else if (!this.ws) {
+      this.connectWebSocket();
+    }
   }
 
   /**
@@ -2026,7 +2075,7 @@ export class Menu3DApp {
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, height);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(this.perfProfile ? this.perfProfile.maxPixelRatio : Math.min(window.devicePixelRatio || 1, 1.5));
   }
 
   /**
@@ -2037,6 +2086,7 @@ export class Menu3DApp {
    */
   animate() {
     requestAnimationFrame(() => this.animate());
+    if (document.hidden) return;
 
     const delta = Math.min(this.clock.getDelta(), 0.1);
     const now = performance.now();

@@ -1254,3 +1254,29 @@ model-viewer {
     padding: 14px 20px 28px;
   }
 }
+
+/* Optimización adaptativa para celulares de gama baja, poca RAM o modo ahorro de datos */
+body.perf-lite .brand-row,
+body.perf-lite .category-tab,
+body.perf-lite .ar-launch-btn,
+body.perf-lite .exit-ar-btn,
+body.perf-lite .native-ar-secondary-btn,
+body.perf-lite .dimensions-toggle-btn,
+body.perf-lite .nutrition-panel,
+body.perf-lite .ar-modal,
+body.perf-lite .order-modal,
+body.perf-lite .loading-overlay {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background-color: rgba(14, 16, 19, 0.94);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -52,13 +52,18 @@ function main() {
     path.join(DIST_DIR, 'js', 'vendor')
   );
 
-  // 4. Copiar manifest.json
+  // 4. Copiar manifest.json y crear alias dist/menu.html -> dist/index.html
   const manifestSrc = path.join(ROOT_DIR, 'manifest.json');
   if (fs.existsSync(manifestSrc)) {
     fs.copyFileSync(manifestSrc, path.join(DIST_DIR, 'manifest.json'));
   }
 
-  console.log('[copy-dist-assets] ✅ Recursos estáticos copiados en dist/ (assets, data, js/vendor, manifest.json)');
+  const distIndexHtml = path.join(DIST_DIR, 'index.html');
+  if (fs.existsSync(distIndexHtml)) {
+    fs.copyFileSync(distIndexHtml, path.join(DIST_DIR, 'menu.html'));
+  }
+
+  console.log('[copy-dist-assets] ✅ Recursos estáticos copiados en dist/ (assets, data, js/vendor, manifest.json, menu.html)');
 }
 
 main();

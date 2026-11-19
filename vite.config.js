@@ -42,6 +42,22 @@ function dualHttpHttpsRedirectPlugin() {
   return {
     name: 'kuroshio-http-to-https-redirect',
     configureServer(server) {
+      server.middlewares.use((req, _res, next) => {
+        if (req.url) {
+          const [rawPath, rawQuery = ''] = req.url.split('?');
+          if (rawPath === '/') {
+            const params = new URLSearchParams(rawQuery);
+            const hasTable = params.has('mesa') || params.has('sector');
+            req.url = hasTable
+              ? `/index.html${rawQuery ? `?${rawQuery}` : ''}`
+              : `/landing.html${rawQuery ? `?${rawQuery}` : ''}`;
+          } else if (rawPath === '/menu.html') {
+            req.url = `/index.html${rawQuery ? `?${rawQuery}` : ''}`;
+          }
+        }
+        next();
+      });
+
       const httpServer = server.httpServer;
       if (!httpServer) return;
 

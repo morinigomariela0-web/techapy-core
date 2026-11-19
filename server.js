@@ -29,6 +29,60 @@ const WS_MAGIC_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const AUTH_SECRET = process.env.TECHAPY_AUTH_SECRET || 'techapy-cloud-hmac-key-2026-py';
 const SUPERADMIN_MASTER_PIN =
   process.env.TECHAPY_SUPERADMIN_PIN || process.env.SUPERADMIN_KEY || 'techapy2026';
+function normalizeParaguayWhatsapp(rawPhone, fallback = '595972736447') {
+  let digits = String(rawPhone || '').replace(/[^0-9]/g, '');
+  if (!digits || digits === '595981000000') return fallback;
+  if (digits.startsWith('00')) digits = digits.slice(2);
+  if (digits.startsWith('09') && digits.length === 10) {
+    digits = `595${digits.slice(1)}`;
+  } else if (digits.startsWith('9') && digits.length === 9) {
+    digits = `595${digits}`;
+  }
+  return digits;
+}
+
+const DEFAULT_SALES_WHATSAPP = normalizeParaguayWhatsapp(
+  process.env.TECHAPY_WHATSAPP,
+  '595972736447'
+);
+
+function normalizeTenantEstado(rawEstado) {
+  const s = String(rawEstado || 'Activo').trim().toLowerCase();
+  if (s === 'pendiente') return 'pendiente';
+  if (s === 'suspendido') return 'Suspendido';
+  return 'Activo';
+}
+
+/**
+ * Calcula los días restantes de suscripción y si está dentro de la ventana de alerta de 7 días.
+ */
+function computeSubscriptionStatus(cfg = {}) {
+  const nowMs = Date.now();
+  let expDate = cfg.fechaVencimiento ? new Date(cfg.fechaVencimiento) : null;
+  if (!expDate || Number.isNaN(expDate.getTime())) {
+    const baseMs = cfg.ultimoPago ? new Date(cfg.ultimoPago).getTime() : nowMs;
+    const validBase = Number.isNaN(baseMs) ? nowMs : baseMs;
+    expDate = new Date(validBase + 30 * 86400000);
+  }
+  const fechaVencimiento = expDate.toISOString();
+  const ultimoPago = cfg.ultimoPago || new Date(expDate.getTime() - 30 * 86400000).toISOString();
+  const diasRestantes = Math.ceil((expDate.getTime() - nowMs) / 86400000);
+  const porVencer = diasRestantes >= 0 && diasRestantes <= 7;
+  const vencido = diasRestantes < 0;
+  const salesWhatsapp = normalizeParaguayWhatsapp(
+    cfg.salesWhatsapp,
+    DEFAULT_SALES_WHATSAPP
+  );
+
+  return {
+    ultimoPago,
+    fechaVencimiento,
+    diasRestantes,
+    porVencer,
+    vencido,
+    salesWhatsapp
+  };
+}
 
 try {
   fs.mkdirSync(LOGS_DIR, { recursive: true });
@@ -288,6 +342,7 @@ function listAllTenantsSummary() {
       cfg.adminPin || (cfg.credenciales && cfg.credenciales.pinAcceso) || '1234'
     ).trim();
     const waiterPin = String(cfg.waiterPin || '5678').trim();
+    const subInfo = computeSubscriptionStatus(cfg);
 
     tenants.push({
       tenant: slug,
@@ -296,7 +351,16 @@ function listAllTenantsSummary() {
       ciudad: cfg.ciudad || 'Asunción, Paraguay',
       moneda: cfg.moneda || 'Gs.',
       plan: cfg.plan || 'Plan Restaurante de Autor',
-      estado: cfg.estado === 'Suspendido' ? 'Suspendido' : 'Activo',
+      estado: normalizeTenantEstado(cfg.estado),
+      fechaSolicitud: cfg.fechaSolicitud || null,
+      contactoNombre: cfg.contactoNombre || '',
+      contactoWhatsapp: cfg.contactoWhatsapp || '',
+      ultimoPago: subInfo.ultimoPago,
+      fechaVencimiento: subInfo.fechaVencimiento,
+      diasRestantes: subInfo.diasRestantes,
+      porVencer: subInfo.porVencer,
+      vencido: subInfo.vencido,
+      salesWhatsapp: subInfo.salesWhatsapp,
       adminPin,
       waiterPin,
       sectores,
@@ -313,7 +377,7 @@ function listAllTenantsSummary() {
  * Aprovisiona un nuevo tenant creando sus carpetas data/tenants/{slug} y assets/tenants/{slug}/models
  * de forma atómica, copiando la carta inicial y modelos 3D base.
  */
-function provisionNewTenantAtomically(payload) {
+function provisionNewTenantAtomically(payload, options = {}) {
   const slug = sanitizeTenantId(payload.tenant);
   if (!slug || slug === 'global') {
     throw new Error('Slug de tenant inválido.');
@@ -321,7 +385,7 @@ function provisionNewTenantAtomically(payload) {
 
   const targetDataDir = path.join(TENANTS_DATA_DIR, slug);
   const targetConfigPath = path.join(targetDataDir, 'config.json');
-  if (fs.existsSync(targetConfigPath)) {
+  if (fs.existsSync(targetConfigPath) && !options.allowIfPending) {
     const err = new Error(`El tenant "${slug}" ya existe.`);
     err.statusCode = 409;
     throw err;
@@ -339,7 +403,7 @@ function provisionNewTenantAtomically(payload) {
     for (const file of fs.readdirSync(demoModelsDir)) {
       const srcFile = path.join(demoModelsDir, file);
       const dstFile = path.join(targetModelsDir, file);
-      if (fs.statSync(srcFile).isFile()) {
+      if (fs.statSync(srcFile).isFile() && !fs.existsSync(dstFile)) {
         fs.copyFileSync(srcFile, dstFile);
       }
     }
@@ -360,7 +424,9 @@ function provisionNewTenantAtomically(payload) {
     } catch (_) {}
   }
   const formattedMenu = JSON.stringify(initialMenu, null, 2) + '\n';
-  writeJsonAtomically(targetMenuPath, formattedMenu);
+  if (!fs.existsSync(targetMenuPath)) {
+    writeJsonAtomically(targetMenuPath, formattedMenu);
+  }
 
   // 3. Crear config.json del nuevo restaurante
   const sectores =
@@ -373,6 +439,11 @@ function provisionNewTenantAtomically(payload) {
 
   const adminPin = String(payload.adminPin || '1234').trim();
   const waiterPin = String(payload.waiterPin || '5678').trim();
+  const nowIso = new Date().toISOString();
+  const defaultExpIso = new Date(Date.now() + 30 * 86400000).toISOString();
+  const expIso = payload.fechaVencimiento
+    ? new Date(payload.fechaVencimiento).toISOString()
+    : defaultExpIso;
 
   const newConfig = {
     tenant: slug,
@@ -381,7 +452,14 @@ function provisionNewTenantAtomically(payload) {
     ciudad: String(payload.ciudad || 'Asunción, Paraguay').trim(),
     moneda: String(payload.moneda || 'Gs.').trim(),
     plan: String(payload.plan || 'Plan Restaurante de Autor').trim(),
-    estado: payload.estado === 'Suspendido' ? 'Suspendido' : 'Activo',
+    estado: normalizeTenantEstado(payload.estado),
+    fechaSolicitud: payload.fechaSolicitud || nowIso,
+    contactoNombre: String(payload.contactoNombre || '').trim(),
+    contactoWhatsapp: String(payload.contactoWhatsapp || '').trim(),
+    capacidadMesas: String(payload.capacidadMesas || '').trim(),
+    ultimoPago: payload.ultimoPago || nowIso,
+    fechaVencimiento: expIso,
+    salesWhatsapp: DEFAULT_SALES_WHATSAPP,
     adminPin,
     waiterPin,
     sectores,
@@ -401,10 +479,15 @@ function provisionNewTenantAtomically(payload) {
     fs.mkdirSync(distTenantDataDir, { recursive: true });
     fs.mkdirSync(distTenantModelsDir, { recursive: true });
     writeJsonAtomically(path.join(distTenantDataDir, 'config.json'), formattedCfg);
-    writeJsonAtomically(path.join(distTenantDataDir, 'menu-data.json'), formattedMenu);
+    if (!fs.existsSync(path.join(distTenantDataDir, 'menu-data.json'))) {
+      writeJsonAtomically(path.join(distTenantDataDir, 'menu-data.json'), formattedMenu);
+    }
     if (fs.existsSync(targetModelsDir)) {
       for (const file of fs.readdirSync(targetModelsDir)) {
-        fs.copyFileSync(path.join(targetModelsDir, file), path.join(distTenantModelsDir, file));
+        const dst = path.join(distTenantModelsDir, file);
+        if (!fs.existsSync(dst)) {
+          fs.copyFileSync(path.join(targetModelsDir, file), dst);
+        }
       }
     }
   }
@@ -413,7 +496,7 @@ function provisionNewTenantAtomically(payload) {
 }
 
 /**
- * Actualiza de forma atómica la configuración, PINs o estado de un tenant existente.
+ * Actualiza de forma atómica la configuración, PINs, estado o ciclo de vencimiento de un tenant.
  */
 function updateExistingTenantAtomically(rawSlug, payload) {
   const slug = sanitizeTenantId(rawSlug);
@@ -430,6 +513,38 @@ function updateExistingTenantAtomically(rawSlug, payload) {
     payload.waiterPin !== undefined ? payload.waiterPin : currentCfg.waiterPin || '5678'
   ).trim();
 
+  let nextEstado =
+    payload.estado !== undefined
+      ? normalizeTenantEstado(payload.estado)
+      : normalizeTenantEstado(currentCfg.estado);
+
+  let nextUltimoPago = payload.ultimoPago || currentCfg.ultimoPago || new Date().toISOString();
+  let nextFechaVencimiento =
+    payload.fechaVencimiento ||
+    currentCfg.fechaVencimiento ||
+    new Date(Date.now() + 30 * 86400000).toISOString();
+
+  // Acción rápida: Activar cuenta pendiente (fija estado Activo + 30 días desde hoy)
+  if (
+    payload.action === 'activate' ||
+    (normalizeTenantEstado(currentCfg.estado) === 'pendiente' && nextEstado === 'Activo' && !payload.fechaVencimiento)
+  ) {
+    nextEstado = 'Activo';
+    nextUltimoPago = new Date().toISOString();
+    nextFechaVencimiento = new Date(Date.now() + 30 * 86400000).toISOString();
+  }
+
+  // Acción rápida: Renovar cuota +30 días
+  if (payload.action === 'renew30') {
+    nextEstado = 'Activo';
+    nextUltimoPago = new Date().toISOString();
+    const currentExpMs = currentCfg.fechaVencimiento
+      ? new Date(currentCfg.fechaVencimiento).getTime()
+      : Date.now();
+    const baseMs = Number.isNaN(currentExpMs) ? Date.now() : Math.max(Date.now(), currentExpMs);
+    nextFechaVencimiento = new Date(baseMs + 30 * 86400000).toISOString();
+  }
+
   const updatedCfg = {
     ...currentCfg,
     tenant: slug,
@@ -442,12 +557,10 @@ function updateExistingTenantAtomically(rawSlug, payload) {
     plan: String(
       payload.plan !== undefined ? payload.plan : currentCfg.plan || 'Plan Restaurante de Autor'
     ).trim(),
-    estado:
-      payload.estado !== undefined
-        ? payload.estado === 'Suspendido'
-          ? 'Suspendido'
-          : 'Activo'
-        : currentCfg.estado || 'Activo',
+    estado: nextEstado,
+    ultimoPago: nextUltimoPago,
+    fechaVencimiento: new Date(nextFechaVencimiento).toISOString(),
+    salesWhatsapp: currentCfg.salesWhatsapp || DEFAULT_SALES_WHATSAPP,
     adminPin,
     waiterPin,
     sectores: Array.isArray(payload.sectores) ? payload.sectores : currentCfg.sectores || [],
@@ -1342,6 +1455,84 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  // 0c. Endpoint Público de Solicitud / Registro de Nuevo Restaurante desde Landing (Estado: "pendiente")
+  if (pathname === '/api/public/register-tenant' && req.method === 'POST') {
+    try {
+      const bodyBuf = await readRequestBodyBuffer(req, 512 * 1024);
+      const payload = JSON.parse(bodyBuf.toString('utf8'));
+      const rawName = String(payload.nombre || payload.restaurant || '').trim();
+      if (!rawName) {
+        sendJsonResponse(res, 400, { ok: false, error: 'El nombre del restaurante es obligatorio.' });
+        return;
+      }
+
+      let baseSlug = String(payload.tenant || rawName)
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 26);
+
+      if (!baseSlug || baseSlug === 'demo' || baseSlug === 'global') {
+        baseSlug = `local-${Date.now().toString().slice(-4)}`;
+      }
+
+      // Si el slug ya existe y está Activo, añadir sufijo único; si ya existe como pendiente, actualizarlo
+      let finalSlug = baseSlug;
+      const candidateCfgPath = path.join(TENANTS_DATA_DIR, finalSlug, 'config.json');
+      if (fs.existsSync(candidateCfgPath)) {
+        try {
+          const existing = JSON.parse(fs.readFileSync(candidateCfgPath, 'utf8'));
+          if (normalizeTenantEstado(existing.estado) !== 'pendiente') {
+            finalSlug = `${baseSlug}-${Date.now().toString().slice(-3)}`;
+          }
+        } catch (_) {}
+      }
+
+      const createdCfg = provisionNewTenantAtomically(
+        {
+          tenant: finalSlug,
+          nombre: rawName,
+          ruc: String(payload.ruc || '80000000-0').trim(),
+          ciudad: String(payload.ciudad || 'Asunción, Paraguay').trim(),
+          plan: String(payload.plan || 'Plan Restaurante de Autor').trim(),
+          estado: 'pendiente',
+          fechaSolicitud: new Date().toISOString(),
+          contactoNombre: String(payload.contactoNombre || '').trim(),
+          contactoWhatsapp: String(payload.contactoWhatsapp || '').trim(),
+          capacidadMesas: String(payload.capacidadMesas || '').trim()
+        },
+        { allowIfPending: true }
+      );
+
+      logProdEvent(
+        'INFO',
+        `[Landing Lead] Nuevo restaurante registrado en estado PENDIENTE: [${createdCfg.tenant}] (${createdCfg.nombre})`
+      );
+
+      sendJsonResponse(res, 201, {
+        ok: true,
+        tenant: createdCfg.tenant,
+        estado: 'pendiente',
+        salesWhatsapp: DEFAULT_SALES_WHATSAPP,
+        config: {
+          tenant: createdCfg.tenant,
+          nombre: createdCfg.nombre,
+          ruc: createdCfg.ruc,
+          ciudad: createdCfg.ciudad,
+          plan: createdCfg.plan,
+          estado: createdCfg.estado,
+          fechaSolicitud: createdCfg.fechaSolicitud
+        }
+      });
+    } catch (err) {
+      logProdEvent('ERROR', 'Error en POST /api/public/register-tenant', err.message);
+      sendJsonResponse(res, 400, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   // 1. Endpoint de información del servidor local y túnel HTTPS
   if (pathname === '/api/server-info' && req.method === 'GET') {
     const lanIp = getLocalLanIp();
@@ -1380,7 +1571,7 @@ const server = http.createServer(async (req, res) => {
     : sanitizeTenantId(parsedUrl.searchParams.get('tenant') || DEFAULT_TENANT);
   const routeAction = tenantRouteMatch ? tenantRouteMatch[2] : null;
 
-  // 1b. GET /api/:tenant/config (o GET /api/config?tenant=...) -> Oculta los PINs de seguridad en la respuesta pública
+  // 1b. GET /api/:tenant/config (o GET /api/config?tenant=...) -> Oculta los PINs de seguridad e incluye estado de vencimiento
   if ((routeAction === 'config' || pathname === '/api/config') && req.method === 'GET') {
     const { configPath } = getTenantPaths(routeTenant);
     fs.readFile(configPath, 'utf8', (err, content) => {
@@ -1390,6 +1581,14 @@ const server = http.createServer(async (req, res) => {
       }
       try {
         const publicCfg = JSON.parse(content);
+        const subInfo = computeSubscriptionStatus(publicCfg);
+        publicCfg.estado = normalizeTenantEstado(publicCfg.estado);
+        publicCfg.ultimoPago = subInfo.ultimoPago;
+        publicCfg.fechaVencimiento = subInfo.fechaVencimiento;
+        publicCfg.diasRestantes = subInfo.diasRestantes;
+        publicCfg.porVencer = subInfo.porVencer;
+        publicCfg.vencido = subInfo.vencido;
+        publicCfg.salesWhatsapp = subInfo.salesWhatsapp;
         delete publicCfg.adminPin;
         delete publicCfg.waiterPin;
         if (publicCfg.credenciales) {
@@ -1602,8 +1801,12 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 5. Archivos estáticos y Separación Automática de Roles (Cliente Público vs Mesero vs Admin)
+  // 5. Archivos estáticos, Landing por Defecto en `/` y Separación Automática de Roles
   if (pathname === '/') {
+    const hasTableParams =
+      parsedUrl.searchParams.has('mesa') || parsedUrl.searchParams.has('sector');
+    pathname = hasTableParams ? '/index.html' : '/landing.html';
+  } else if (pathname === '/menu.html') {
     pathname = '/index.html';
   }
 
@@ -1625,10 +1828,29 @@ const server = http.createServer(async (req, res) => {
     requiredRole = 'admin';
   }
 
-  // Verificar si el servicio del tenant se encuentra Suspendido por el SuperAdmin
-  if (pathname === '/index.html' || pathname === '/mesero.html') {
+  // Verificar si el servicio del tenant se encuentra en estado "pendiente" o "Suspendido"
+  if (
+    pathname === '/index.html' ||
+    pathname === '/mesero.html' ||
+    pathname === '/admin-menu.html' ||
+    pathname === '/admin-qr.html'
+  ) {
     const { rawConfig, nombre } = getTenantSecurityConfig(activeTenant);
-    if (rawConfig && rawConfig.estado === 'Suspendido') {
+    const tenantEstado = normalizeTenantEstado(rawConfig && rawConfig.estado);
+
+    if (tenantEstado === 'pendiente') {
+      const waMsg = encodeURIComponent(
+        `Hola TechaPY, solicito la activación de mi cuenta para el local "${nombre}" (Tenant: ${activeTenant}).`
+      );
+      res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/><title>Cuenta Pendiente de Activación — TechaPY</title><style>body{background:#0e1013;color:#f4f4f6;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:20px;text-align:center}.box{max-width:480px;background:#15181e;border:1px solid rgba(197,160,89,0.45);border-radius:16px;padding:34px 28px;box-shadow:0 24px 60px rgba(0,0,0,0.75)}.badge{display:inline-block;font-size:0.7rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#d4af37;background:rgba(197,160,89,0.14);border:1px solid rgba(197,160,89,0.35);padding:4px 10px;border-radius:999px;margin-bottom:14px}h1{color:#ffffff;font-size:1.35rem;margin:0 0 10px}p{color:#989ea8;font-size:0.9rem;line-height:1.55;margin-bottom:20px}.actions{display:flex;flex-direction:column;gap:10px}.btn{display:inline-block;text-decoration:none;font-weight:700;font-size:0.86rem;padding:11px 16px;border-radius:10px}.btn-gold{background:#c5a059;color:#0e1013}.btn-outline{border:1px solid rgba(255,255,255,0.15);color:#f4f4f6}</style></head><body><div class="box"><span class="badge">ESTADO: PENDIENTE DE ACTIVACIÓN</span><h1>Cuenta pendiente de activación por SuperAdmin</h1><p>El entorno multi-tenant de <strong>${nombre}</strong> (<code>?tenant=${activeTenant}</code>) fue registrado correctamente, pero aún requiere validación y activación comercial en el panel de <strong>SuperAdmin</strong>.</p><div class="actions"><a class="btn btn-gold" href="https://wa.me/${DEFAULT_SALES_WHATSAPP}?text=${waMsg}" target="_blank" rel="noopener">Solicitar Activación por WhatsApp</a><a class="btn btn-outline" href="/landing.html">← Volver a la Página Principal</a></div></div></body></html>`);
+      return;
+    }
+
+    if (
+      tenantEstado === 'Suspendido' &&
+      (pathname === '/index.html' || pathname === '/mesero.html')
+    ) {
       res.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/><title>Servicio Suspendido — TechaPY</title><style>body{background:#0e1013;color:#f4f4f6;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:20px;text-align:center}.box{max-width:440px;background:#15181e;border:1px solid rgba(197,160,89,0.35);border-radius:14px;padding:30px}h1{color:#d4af37;font-size:1.3rem;margin-bottom:10px}p{color:#989ea8;font-size:0.9rem;line-height:1.5}</style></head><body><div class="box"><h1>Servicio Temporalmente Suspendido</h1><p>La carta digital 3D del establecimiento <strong>${nombre}</strong> se encuentra temporalmente en mantenimiento o pausa administrativa.</p></div></body></html>`);
       return;

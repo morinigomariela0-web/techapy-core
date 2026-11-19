@@ -9,9 +9,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Playfair+Display:ital,wght@0,500;0,600;0,700;1,400&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <script src="./js/vendor/qrcode.min.js"></script>
-  <script type="module" crossorigin src="/assets/superadmin-7S_ICVbx.js"></script>
+  <script type="module" crossorigin src="/assets/superadmin-MHfwG7--.js"></script>
   <link rel="modulepreload" crossorigin href="/assets/modulepreload-polyfill-B5Qt9EMX.js">
-  <link rel="stylesheet" crossorigin href="/assets/superadmin-DtrME5dx.css">
+  <link rel="stylesheet" crossorigin href="/assets/superadmin-RcKhfcPl.css">
 </head>
 <body>
   <div class="sa-shell">
@@ -90,6 +90,7 @@
         <select id="sa-status-filter" aria-label="Filtrar por estado">
           <option value="ALL">Todos los estados</option>
           <option value="Activo">Solo Activos</option>
+          <option value="pendiente">Solo Pendientes de Activación</option>
           <option value="Suspendido">Solo Suspendidos</option>
         </select>
 
@@ -114,6 +115,7 @@
               <th>Nombre del Local</th>
               <th>RUC</th>
               <th>Estado</th>
+              <th>Vencimiento / Cuota</th>
               <th>Mesas &amp; Sectores</th>
               <th>PIN Admin</th>
               <th>PIN Mesero</th>
@@ -122,7 +124,7 @@
           </thead>
           <tbody id="sa-tenants-tbody">
             <tr>
-              <td colspan="8" class="sa-empty-cell">Cargando restaurantes registrados...</td>
+              <td colspan="9" class="sa-empty-cell">Cargando restaurantes registrados...</td>
             </tr>
           </tbody>
         </table>
@@ -179,12 +181,13 @@
             <label for="f-tenant-estado">Estado del Servicio</label>
             <select id="f-tenant-estado">
               <option value="Activo">Activo (Operando)</option>
+              <option value="pendiente">Pendiente de Activación</option>
               <option value="Suspendido">Suspendido (Pausado)</option>
             </select>
           </div>
         </div>
 
-        <div class="sa-form-grid-2 sa-pins-box">
+        <div class="sa-form-grid-3 sa-pins-box">
           <div class="sa-field">
             <label for="f-admin-pin">PIN de Administrador (<code>adminPin</code>) *</label>
             <input id="f-admin-pin" type="text" value="1234" placeholder="Ej. 1234" required />
@@ -195,6 +198,12 @@
             <label for="f-waiter-pin">PIN de Meseros (<code>waiterPin</code>) *</label>
             <input id="f-waiter-pin" type="text" value="5678" placeholder="Ej. 5678" required />
             <small>Protege la consola de salón <code>/mesero.html</code></small>
+          </div>
+
+          <div class="sa-field">
+            <label for="f-fecha-vencimiento">Vencimiento de Cuota Mensual</label>
+            <input id="f-fecha-vencimiento" type="date" />
+            <small>Alerta automática en los últimos 7 días</small>
           </div>
         </div>
 

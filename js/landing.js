@@ -4,17 +4,22 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 /**
  * Controlador de la Landing Editorial de TechaPY (`landing.html`):
- * - Renderiza el visor 3D interactivo embebido en el Hero con modelos `.glb` reales
- *   (`ramen.glb`, `burger.glb`, `dessert.glb`) y guía de cota métrica 1:1 en bronce satinado.
- * - Conecta los botones de selección de planes con el formulario de demostración.
- * - Abre WhatsApp con el mensaje directo requerido:
- *   "Hola, me interesa agendar una demostración de TechaPY en mi local."
+ * - Renderiza el visor 3D interactivo embebido en el Hero con perfil de rendimiento adaptativo.
+ * - Gestiona el Modal Unificado de "Iniciar Sesión" (Admin de Local, Mesero o SuperAdmin).
+ * - Registra solicitudes de nuevos restaurantes en estado `"pendiente"` (`POST /api/public/register-tenant`)
+ *   y abre WhatsApp con el mensaje prearmado de solicitud de activación.
  */
 class TechaPYLandingApp {
   constructor() {
     this.viewport = document.getElementById('landing-3d-viewport');
     this.dimsTag = document.getElementById('landing-3d-dims-tag');
     this.showDims = true;
+    this.isViewportVisible = true;
+
+    this.perfProfile = this.detectPerformanceProfile();
+    if (this.perfProfile.isLite) {
+      document.body.classList.add('perf-lite');
+    }
 
     this.demoCatalog = {
       ramen: {
@@ -53,6 +58,26 @@ class TechaPYLandingApp {
     }
 
     this.bindUIEvents();
+    this.bindLoginModalEvents();
+  }
+
+  /**
+   * Detecta capacidades del dispositivo y red para ajustar pixelRatio y efectos visuales.
+   */
+  detectPerformanceProfile() {
+    const cores = Number(navigator.hardwareConcurrency) || 4;
+    const memory = Number(navigator.deviceMemory) || 4;
+    const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    const saveData = Boolean(conn && conn.saveData);
+    const slowNet = Boolean(conn && ['slow-2g', '2g', '3g'].includes(conn.effectiveType));
+    const reducedMotion =
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    const isLite = saveData || slowNet || cores <= 4 || memory <= 3 || reducedMotion;
+    const maxPixelRatio = isLite ? 1 : Math.min(window.devicePixelRatio || 1, 1.5);
+
+    return { isLite, maxPixelRatio, reducedMotion };
   }
 
   initEmbedded3DViewer() {
@@ -63,9 +88,13 @@ class TechaPYLandingApp {
     this.camera = new THREE.PerspectiveCamera(40, width / height, 0.1, 40);
     this.camera.position.set(0.3, 2.1, 3.1);
 
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: !this.perfProfile.isLite,
+      alpha: true,
+      powerPreference: 'high-performance'
+    });
     this.renderer.setSize(width, height);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(this.perfProfile.maxPixelRatio);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.2;
@@ -93,10 +122,21 @@ class TechaPYLandingApp {
       if (!this.viewport) return;
       const w = this.viewport.clientWidth;
       const h = this.viewport.clientHeight;
+      if (!w || !h) return;
       this.camera.aspect = w / h;
       this.camera.updateProjectionMatrix();
       this.renderer.setSize(w, h);
+      this.renderer.setPixelRatio(this.perfProfile.maxPixelRatio);
     });
+
+    if (typeof IntersectionObserver !== 'undefined') {
+      const obs = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          this.isViewportVisible = entry.isIntersecting;
+        });
+      });
+      obs.observe(this.viewport);
+    }
 
     this.animate();
   }
@@ -153,6 +193,97 @@ class TechaPYLandingApp {
     this.scene.add(this.cotaRing);
   }
 
+  bindLoginModalEvents() {
+    const openBtn = document.getElementById('open-login-modal-btn');
+    const closeBtn = document.getElementById('close-login-modal-btn');
+    const modal = document.getElementById('landing-login-modal');
+    const roleSelect = document.getElementById('login-role');
+    const tenantGroup = document.getElementById('login-tenant-group');
+    const tenantInput = document.getElementById('login-tenant');
+    const pinInput = document.getElementById('login-pin');
+    const pinLabel = document.getElementById('login-pin-label');
+    const errBox = document.getElementById('landing-login-error');
+    const loginForm = document.getElementById('landing-login-form');
+
+    if (!modal || !loginForm) return;
+
+    const syncRoleFields = () => {
+      const role = roleSelect.value;
+      if (role === 'superadmin') {
+        tenantGroup.classList.add('hidden');
+        tenantInput.required = false;
+        pinLabel.textContent = 'Contraseña Maestra SuperAdmin';
+      } else {
+        tenantGroup.classList.remove('hidden');
+        tenantInput.required = true;
+        pinLabel.textContent =
+          role === 'admin' ? 'PIN de Administrador del Local' : 'PIN de Mesero de Salón';
+      }
+      errBox.classList.add('hidden');
+    };
+
+    roleSelect.addEventListener('change', syncRoleFields);
+    syncRoleFields();
+
+    if (openBtn) {
+      openBtn.addEventListener('click', () => {
+        errBox.classList.add('hidden');
+        modal.classList.remove('hidden');
+        pinInput.focus();
+      });
+    }
+
+    if (closeBtn) {
+      closeBtn.addEventListener('click', () => {
+        modal.classList.add('hidden');
+      });
+    }
+
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        modal.classList.add('hidden');
+      }
+    });
+
+    loginForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errBox.classList.add('hidden');
+      const role = roleSelect.value;
+      const tenant =
+        role === 'superadmin'
+          ? 'global'
+          : (tenantInput.value || 'demo').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '') || 'demo';
+      const pin = pinInput.value.trim();
+
+      if (!pin) return;
+
+      try {
+        const res = await fetch('./api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tenant, role, pin })
+        });
+        const data = await res.json();
+        if (!res.ok || !data || !data.ok) {
+          errBox.textContent = (data && data.error) || 'Credenciales inválidas para el rol seleccionado.';
+          errBox.classList.remove('hidden');
+          return;
+        }
+
+        if (role === 'superadmin') {
+          window.location.href = './superadmin.html';
+        } else if (role === 'admin') {
+          window.location.href = `./admin-menu.html?tenant=${encodeURIComponent(tenant)}`;
+        } else {
+          window.location.href = `./mesero.html?tenant=${encodeURIComponent(tenant)}&id=juan&sector=Terraza`;
+        }
+      } catch (err) {
+        errBox.textContent = 'Error de conexión al verificar credenciales.';
+        errBox.classList.remove('hidden');
+      }
+    });
+  }
+
   bindUIEvents() {
     // Selector de platos del visor demo
     document.querySelectorAll('.demo-dish-btn').forEach((btn) => {
@@ -191,33 +322,85 @@ class TechaPYLandingApp {
       });
     });
 
-    // Formulario de cotización -> Abre WhatsApp con mensaje directo de TechaPY
+    // Formulario de solicitud -> Registra el tenant en estado "pendiente" y abre WhatsApp con solicitud de activación
     const form = document.getElementById('whatsapp-quote-form');
     if (form) {
-      form.addEventListener('submit', (e) => {
+      form.addEventListener('submit', async (e) => {
         e.preventDefault();
         const name = document.getElementById('lead-name').value.trim();
         const restaurant = document.getElementById('lead-restaurant').value.trim();
+        const rucEl = document.getElementById('lead-ruc');
+        const ruc = rucEl ? rucEl.value.trim() : '80000000-0';
         const city = document.getElementById('lead-city').value.trim();
         const tables = document.getElementById('lead-tables').value;
         const plan = document.getElementById('lead-plan').value;
         const notes = document.getElementById('lead-notes').value.trim();
-        const rawPhone = document.getElementById('lead-whatsapp').value.replace(/[^0-9]/g, '') || '595981000000';
+        const contactPhone = document.getElementById('lead-whatsapp').value.trim();
+        const statusBox = document.getElementById('lead-registration-status');
 
-        const baseGreeting = 'Hola, me interesa agendar una demostración de TechaPY en mi local.';
-        const details = [];
-        if (name) details.push(`• Contacto: ${name}`);
-        if (restaurant) details.push(`• Restaurante: ${restaurant}`);
-        if (city) details.push(`• Ciudad/Zona: ${city}`);
-        if (tables) details.push(`• Capacidad: ${tables}`);
-        if (plan) details.push(`• Plan: ${plan}`);
+        let assignedSlug = restaurant
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-+|-+$/g, '')
+          .slice(0, 26) || 'nuevo-local';
+        let targetSalesWa = '595972736447';
+
+        try {
+          const res = await fetch('./api/public/register-tenant', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              nombre: restaurant,
+              ruc,
+              ciudad: city,
+              plan,
+              contactoNombre: name,
+              contactoWhatsapp: contactPhone,
+              capacidadMesas: tables
+            })
+          });
+          const data = await res.json();
+          if (res.ok && data && data.ok) {
+            assignedSlug = data.tenant || assignedSlug;
+            targetSalesWa = data.salesWhatsapp || targetSalesWa;
+          }
+        } catch (err) {
+          console.warn('No se pudo pre-registrar el tenant en servidor:', err);
+        }
+
+        // Asegurar formato internacional limpio para wa.me (sin +, espacios ni 0 inicial)
+        let cleanWaPhone = String(targetSalesWa || '595972736447').replace(/[^0-9]/g, '');
+        if (cleanWaPhone.startsWith('09') && cleanWaPhone.length === 10) {
+          cleanWaPhone = `595${cleanWaPhone.slice(1)}`;
+        } else if (!cleanWaPhone) {
+          cleanWaPhone = '595972736447';
+        }
+
+        if (statusBox) {
+          statusBox.classList.remove('hidden');
+          statusBox.innerHTML = `
+            ✓ Solicitud registrada con estado <strong>PENDIENTE DE ACTIVACIÓN</strong>.<br/>
+            • Identificador asignado (Slug): <code>${assignedSlug}</code><br/>
+            • Tu cuenta será habilitada en el panel de <strong>SuperAdmin</strong> tras confirmar por WhatsApp.
+          `;
+        }
+
+        const baseGreeting = `Hola TechaPY, solicito la activación de mi cuenta (estado pendiente) y agendar demostración para mi restaurante.`;
+        const details = [
+          `• Restaurante: ${restaurant}`,
+          `• Slug / Tenant registrado: ${assignedSlug} (Estado: pendiente)`,
+          `• RUC: ${ruc || 'A confirmar'}`,
+          `• Contacto: ${name || 'A confirmar'} (${contactPhone || '—'})`,
+          `• Ciudad/Zona: ${city || 'Asunción'}`,
+          `• Capacidad: ${tables}`,
+          `• Plan solicitado: ${plan}`
+        ];
         if (notes) details.push(`• Horario sugerido: ${notes}`);
 
-        const finalMessage = details.length > 0
-          ? `${baseGreeting}\n\n${details.join('\n')}`
-          : baseGreeting;
-
-        const waUrl = `https://wa.me/${rawPhone}?text=${encodeURIComponent(finalMessage)}`;
+        const finalMessage = `${baseGreeting}\n\n${details.join('\n')}`;
+        const waUrl = `https://wa.me/${cleanWaPhone}?text=${encodeURIComponent(finalMessage)}`;
         window.open(waUrl, '_blank', 'noopener,noreferrer');
       });
     }
@@ -225,8 +408,10 @@ class TechaPYLandingApp {
 
   animate() {
     requestAnimationFrame(() => this.animate());
+    if (document.hidden || !this.isViewportVisible) return;
+
     const delta = Math.min(this.clock.getDelta(), 0.1);
-    if (this.currentModel) {
+    if (this.currentModel && !this.perfProfile.reducedMotion) {
       this.currentModel.rotation.y += delta * 0.32;
     }
     this.controls.update();

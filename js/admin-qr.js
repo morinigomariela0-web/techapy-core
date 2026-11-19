@@ -58,8 +58,60 @@ class AdminQRGenerator {
         this.renderSectorRows();
       }
       this.updateNavLinks(tenant);
+      this.renderSubscriptionExpirationBanner(cfg);
       await this.generateAllQRCards();
     } catch (_) {}
+  }
+
+  /**
+   * Muestra un banner de alerta si faltan entre 0 y 7 días para el vencimiento de la cuota (o si está vencida).
+   */
+  renderSubscriptionExpirationBanner(cfg) {
+    const existing = document.getElementById('subscription-expiry-banner');
+    if (existing) existing.remove();
+    if (!cfg || typeof cfg.diasRestantes !== 'number' || cfg.diasRestantes > 7) return;
+
+    const days = cfg.diasRestantes;
+    const expDate = cfg.fechaVencimiento ? new Date(cfg.fechaVencimiento) : null;
+    const dateStr =
+      expDate && !Number.isNaN(expDate.getTime())
+        ? `${String(expDate.getDate()).padStart(2, '0')}/${String(expDate.getMonth() + 1).padStart(2, '0')}/${expDate.getFullYear()}`
+        : '';
+
+    const statusText =
+      days < 0
+        ? `Tu cuota mensual venció hace ${Math.abs(days)} día(s) (${dateStr}).`
+        : days === 0
+        ? `Tu cuota mensual de TechaPY vence HOY (${dateStr}).`
+        : `Tu cuota mensual de TechaPY vence en ${days} día(s) (${dateStr}).`;
+
+    const salesWa = String(cfg.salesWhatsapp || '595972736447').replace(/[^0-9]/g, '') || '595972736447';
+    const waMsg = encodeURIComponent(
+      `Hola TechaPY, deseo regularizar/renovar la cuota mensual del local "${cfg.nombre || cfg.tenant}" (Tenant: ${cfg.tenant}).`
+    );
+
+    const banner = document.createElement('div');
+    banner.id = 'subscription-expiry-banner';
+    banner.className = 'no-print';
+    banner.style.cssText =
+      'background:rgba(180,83,9,0.24);border:1px solid rgba(251,191,36,0.55);color:#fde68a;padding:13px 18px;border-radius:12px;margin-bottom:18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;font-size:0.84rem;';
+    banner.innerHTML = `
+      <div>
+        <strong>⚠️ Aviso de Vencimiento de Suscripción:</strong> ${statusText}
+        <span style="color:#f4f4f6;">Regulariza tu abono para mantener activo el servicio en salón.</span>
+      </div>
+      <a href="https://wa.me/${salesWa}?text=${waMsg}" target="_blank" rel="noopener" style="background:#c5a059;color:#0e1013;text-decoration:none;font-weight:700;padding:8px 14px;border-radius:8px;white-space:nowrap;">
+        Regularizar Cuota por WhatsApp
+      </a>
+    `;
+
+    const container = document.querySelector('.admin-container');
+    const header = document.querySelector('.admin-header');
+    if (container && header && header.nextSibling) {
+      container.insertBefore(banner, header.nextSibling);
+    } else if (container) {
+      container.prepend(banner);
+    }
   }
 
   updateNavLinks(tenant) {

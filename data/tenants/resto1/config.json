@@ -6,6 +6,9 @@
   "moneda": "Gs.",
   "plan": "Plan Restaurante de Autor",
   "estado": "Activo",
+  "ultimoPago": "2026-11-14T12:00:00.000Z",
+  "fechaVencimiento": "2026-12-14T23:59:59.000Z",
+  "salesWhatsapp": "595972736447",
   "adminPin": "1234",
   "waiterPin": "5678",
   "sectores": [

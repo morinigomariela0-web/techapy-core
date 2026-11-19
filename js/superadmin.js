@@ -2,7 +2,7 @@
  * Controlador del Panel Central SuperAdmin (superadmin.html) — TechaPY SaaS Multi-Tenant.
  * - Lista todos los restaurantes instalados (GET /api/superadmin/tenants).
  * - Aprovisiona nuevos tenants atómicamente (POST /api/superadmin/tenants).
- * - Edita configuración, sectores, PINs de seguridad y estado Activo/Suspendido (PUT /api/superadmin/tenants/:tenant).
+ * - Activa cuentas en estado "pendiente", renueva cuotas (+30 días) y edita PINs/estado (PUT /api/superadmin/tenants/:tenant).
  * - Genera y descarga el paquete masivo de placas QR listas para imprimir por restaurante.
  */
 
@@ -49,7 +49,6 @@ class SuperAdminController {
     this.searchInput.addEventListener('input', () => this.renderTable());
     this.statusFilter.addEventListener('change', () => this.renderTable());
 
-    // Autocompletar slug al escribir el nombre del local (solo en modo creación)
     const nameInput = document.getElementById('f-tenant-nombre');
     const slugInput = document.getElementById('f-tenant-slug');
     nameInput.addEventListener('input', () => {
@@ -100,16 +99,33 @@ class SuperAdminController {
 
   updateKPIs() {
     const total = this.tenants.length;
-    const active = this.tenants.filter((t) => t.estado !== 'Suspendido').length;
-    const suspended = total - active;
+    const active = this.tenants.filter((t) => t.estado === 'Activo').length;
+    const pending = this.tenants.filter((t) => String(t.estado).toLowerCase() === 'pendiente').length;
+    const suspended = this.tenants.filter((t) => t.estado === 'Suspendido').length;
     const totalTables = this.tenants.reduce((acc, t) => acc + (Number(t.totalMesas) || 0), 0);
     const totalDishes = this.tenants.reduce((acc, t) => acc + (Number(t.totalPlatos) || 0), 0);
 
     document.getElementById('kpi-total-tenants').textContent = String(total);
     document.getElementById('kpi-active-tenants').textContent = String(active);
-    document.getElementById('kpi-suspended-sub').textContent = `${suspended} suspendido(s)`;
+    document.getElementById('kpi-suspended-sub').textContent = `${pending} pendiente(s) · ${suspended} suspendido(s)`;
     document.getElementById('kpi-total-tables').textContent = String(totalTables);
     document.getElementById('kpi-total-dishes').textContent = String(totalDishes);
+  }
+
+  formatDatePY(isoStr) {
+    if (!isoStr) return '—';
+    const d = new Date(isoStr);
+    if (Number.isNaN(d.getTime())) return '—';
+    const dd = String(d.getDate()).padStart(2, '0');
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const yyyy = d.getFullYear();
+    return `${dd}/${mm}/${yyyy}`;
+  }
+
+  toInputDateValue(isoStr) {
+    const d = isoStr ? new Date(isoStr) : new Date(Date.now() + 30 * 86400000);
+    const valid = Number.isNaN(d.getTime()) ? new Date(Date.now() + 30 * 86400000) : d;
+    return valid.toISOString().slice(0, 10);
   }
 
   renderTable() {
@@ -118,7 +134,7 @@ class SuperAdminController {
 
     const filtered = this.tenants.filter((t) => {
       const estado = t.estado || 'Activo';
-      if (statusFilter !== 'ALL' && estado !== statusFilter) return false;
+      if (statusFilter !== 'ALL' && estado.toLowerCase() !== statusFilter.toLowerCase()) return false;
       if (!q) return true;
       const haystack = `${t.tenant} ${t.nombre} ${t.ruc || ''} ${t.ciudad || ''} ${t.plan || ''}`.toLowerCase();
       return haystack.includes(q);
@@ -128,16 +144,34 @@ class SuperAdminController {
 
     if (filtered.length === 0) {
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td colspan="8" class="sa-empty-cell">No se encontraron restaurantes que coincidan con el filtro actual.</td>`;
+      tr.innerHTML = `<td colspan="9" class="sa-empty-cell">No se encontraron restaurantes que coincidan con el filtro actual.</td>`;
       this.tbody.appendChild(tr);
       return;
     }
 
     filtered.forEach((t) => {
+      const isPending = String(t.estado).toLowerCase() === 'pendiente';
       const isSuspended = t.estado === 'Suspendido';
       const sectorsCount = Array.isArray(t.sectores) ? t.sectores.length : 0;
-      const tr = document.createElement('tr');
 
+      const statusBadgeClass = isPending ? 'pending' : isSuspended ? 'suspended' : 'active';
+      const statusLabel = isPending ? 'Pendiente' : isSuspended ? 'Suspendido' : 'Activo';
+
+      const days = typeof t.diasRestantes === 'number' ? t.diasRestantes : 30;
+      let expClass = 'ok';
+      let expText = `${days} días restantes`;
+      if (isPending) {
+        expClass = 'warn';
+        expText = 'Aguardando activación';
+      } else if (days < 0) {
+        expClass = 'expired';
+        expText = `Vencido hace ${Math.abs(days)} día(s)`;
+      } else if (days <= 7) {
+        expClass = 'warn';
+        expText = days === 0 ? '⚠️ Vence HOY' : `⚠️ Vence en ${days} día(s)`;
+      }
+
+      const tr = document.createElement('tr');
       tr.innerHTML = `
         <td>
           <span class="sa-slug-pill">${this.escapeHtml(t.tenant)}</span>
@@ -150,9 +184,13 @@ class SuperAdminController {
           <span class="sa-ruc-code">${this.escapeHtml(t.ruc || '80000000-0')}</span>
         </td>
         <td>
-          <span class="sa-status-badge ${isSuspended ? 'suspended' : 'active'}">
-            ● ${isSuspended ? 'Suspendido' : 'Activo'}
+          <span class="sa-status-badge ${statusBadgeClass}">
+            ● ${statusLabel}
           </span>
+        </td>
+        <td>
+          <div><strong>${this.formatDatePY(t.fechaVencimiento)}</strong></div>
+          <span class="sa-exp-badge ${expClass}">${expText}</span>
         </td>
         <td>
           <strong>${Number(t.totalMesas) || 0} mesas</strong>
@@ -166,24 +204,42 @@ class SuperAdminController {
         </td>
         <td>
           <div class="sa-actions-cell">
-            <a href="./index.html?tenant=${encodeURIComponent(t.tenant)}" target="_blank" class="sa-btn-outline sa-btn-sm" title="Abrir Carta 3D del Cliente">Carta 3D</a>
+            ${
+              isPending
+                ? `<button type="button" class="sa-btn-gold sa-btn-sm" data-action="activate" title="Activar cuenta y fijar ciclo de 30 días">✓ Activar Cuenta</button>`
+                : ''
+            }
+            <button type="button" class="sa-btn-outline sa-btn-sm" data-action="renew30" title="Extender suscripción por +30 días">+30d Cuota</button>
+            <a href="./menu.html?tenant=${encodeURIComponent(t.tenant)}" target="_blank" class="sa-btn-outline sa-btn-sm" title="Abrir Carta 3D del Cliente">Carta 3D</a>
             <a href="./admin-menu.html?tenant=${encodeURIComponent(t.tenant)}&pin=${encodeURIComponent(t.adminPin || '1234')}" target="_blank" class="sa-btn-outline sa-btn-sm" title="Abrir Gestión de Carta">Admin Carta</a>
             <button type="button" class="sa-btn-outline sa-btn-sm" data-action="qr-pack" title="Descargar paquete masivo de códigos QR listo para imprimir">Paquete QR</button>
-            <button type="button" class="sa-btn-outline sa-btn-sm" data-action="edit" title="Editar configuración y PINs">Editar / PINs</button>
-            <button type="button" class="${isSuspended ? 'sa-btn-gold' : 'sa-btn-danger'} sa-btn-sm" data-action="toggle-status">
-              ${isSuspended ? 'Reactivar' : 'Suspender'}
-            </button>
+            <button type="button" class="sa-btn-outline sa-btn-sm" data-action="edit" title="Editar configuración, vencimiento y PINs">Editar / PINs</button>
+            ${
+              !isPending
+                ? `<button type="button" class="${isSuspended ? 'sa-btn-gold' : 'sa-btn-danger'} sa-btn-sm" data-action="toggle-status">${isSuspended ? 'Reactivar' : 'Suspender'}</button>`
+                : ''
+            }
           </div>
         </td>
       `;
+
+      const activateBtn = tr.querySelector('[data-action="activate"]');
+      if (activateBtn) {
+        activateBtn.addEventListener('click', () => this.activatePendingTenant(t));
+      }
+
+      tr.querySelector('[data-action="renew30"]').addEventListener('click', () => {
+        this.renewTenantSubscription(t);
+      });
 
       tr.querySelector('[data-action="edit"]').addEventListener('click', () => {
         this.openModalForEdit(t);
       });
 
-      tr.querySelector('[data-action="toggle-status"]').addEventListener('click', () => {
-        this.toggleTenantStatus(t);
-      });
+      const toggleBtn = tr.querySelector('[data-action="toggle-status"]');
+      if (toggleBtn) {
+        toggleBtn.addEventListener('click', () => this.toggleTenantStatus(t));
+      }
 
       tr.querySelector('[data-action="qr-pack"]').addEventListener('click', () => {
         this.downloadMassiveQRPackage(t);
@@ -210,6 +266,7 @@ class SuperAdminController {
     document.getElementById('f-tenant-estado').value = 'Activo';
     document.getElementById('f-admin-pin').value = '1234';
     document.getElementById('f-waiter-pin').value = '5678';
+    document.getElementById('f-fecha-vencimiento').value = this.toInputDateValue(null);
 
     this.sectorsListEl.replaceChildren();
     [
@@ -234,9 +291,15 @@ class SuperAdminController {
     document.getElementById('f-tenant-ruc').value = tenantObj.ruc || '80000000-0';
     document.getElementById('f-tenant-ciudad').value = tenantObj.ciudad || 'Asunción, Paraguay';
     document.getElementById('f-tenant-plan').value = tenantObj.plan || 'Plan Restaurante de Autor';
-    document.getElementById('f-tenant-estado').value = tenantObj.estado || 'Activo';
+    document.getElementById('f-tenant-estado').value =
+      String(tenantObj.estado).toLowerCase() === 'pendiente'
+        ? 'pendiente'
+        : tenantObj.estado || 'Activo';
     document.getElementById('f-admin-pin').value = tenantObj.adminPin || '1234';
     document.getElementById('f-waiter-pin').value = tenantObj.waiterPin || '5678';
+    document.getElementById('f-fecha-vencimiento').value = this.toInputDateValue(
+      tenantObj.fechaVencimiento
+    );
 
     this.sectorsListEl.replaceChildren();
     const sectors =
@@ -290,6 +353,11 @@ class SuperAdminController {
   }
 
   async handleFormSubmit() {
+    const expDateVal = document.getElementById('f-fecha-vencimiento').value;
+    const fechaVencimiento = expDateVal
+      ? new Date(`${expDateVal}T23:59:59.000Z`).toISOString()
+      : new Date(Date.now() + 30 * 86400000).toISOString();
+
     const payload = {
       tenant: document.getElementById('f-tenant-slug').value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, ''),
       nombre: document.getElementById('f-tenant-nombre').value.trim(),
@@ -299,6 +367,7 @@ class SuperAdminController {
       estado: document.getElementById('f-tenant-estado').value,
       adminPin: document.getElementById('f-admin-pin').value.trim() || '1234',
       waiterPin: document.getElementById('f-waiter-pin').value.trim() || '5678',
+      fechaVencimiento,
       sectores: this.collectSectorsFromModal()
     };
 
@@ -336,6 +405,49 @@ class SuperAdminController {
     }
   }
 
+  async activatePendingTenant(tenantObj) {
+    try {
+      const res = await fetch(`./api/superadmin/tenants/${encodeURIComponent(tenantObj.tenant)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'activate',
+          estado: 'Activo'
+        })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error((data && data.error) || 'No se pudo activar la cuenta');
+      }
+      this.showToast(
+        `✓ Cuenta "${tenantObj.nombre}" (${tenantObj.tenant}) ACTIVADA con ciclo de 30 días.`
+      );
+      await this.fetchTenants();
+    } catch (err) {
+      this.showToast(`Error: ${err.message}`);
+    }
+  }
+
+  async renewTenantSubscription(tenantObj) {
+    try {
+      const res = await fetch(`./api/superadmin/tenants/${encodeURIComponent(tenantObj.tenant)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'renew30'
+        })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error((data && data.error) || 'No se pudo renovar la cuota');
+      }
+      this.showToast(`✓ Cuota de "${tenantObj.nombre}" renovada por +30 días.`);
+      await this.fetchTenants();
+    } catch (err) {
+      this.showToast(`Error: ${err.message}`);
+    }
+  }
+
   async toggleTenantStatus(tenantObj) {
     const nextStatus = tenantObj.estado === 'Suspendido' ? 'Activo' : 'Suspendido';
     try {
@@ -360,10 +472,6 @@ class SuperAdminController {
     }
   }
 
-  /**
-   * Genera un paquete HTML autónomo con todas las placas QR de todas las mesas y sectores
-   * del tenant seleccionado (con imágenes PNG Base64 incrustadas generadas offline) y lo descarga.
-   */
   async downloadMassiveQRPackage(tenantObj) {
     try {
       const baseOrigin = window.location.origin.replace(/\/+$/, '');
