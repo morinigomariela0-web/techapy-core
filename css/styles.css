@@ -126,6 +126,8 @@ body.ar-passthrough-active .viewer-stage {
 .exit-ar-btn,
 .native-ar-secondary-btn,
 .dimensions-toggle-btn,
+.ar-distance-selector,
+.ar-dist-btn,
 .dish-detail-card,
 .dish-options-container,
 .dishes-carousel,
@@ -514,12 +516,70 @@ body.ar-passthrough-active .category-tabs {
   color: var(--accent-secondary);
 }
 
-/* Badge de dimensiones en la esquina inferior izquierda del visor 3D */
-.dimensions-hud-badge {
+/* HUD en la esquina inferior izquierda del visor 3D (Selector de Distancia AR 1:1 + Badge de Dimensiones) */
+.viewer-left-hud {
   position: absolute;
   left: 10px;
   bottom: 10px;
   z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  pointer-events: none;
+  max-width: calc(100% - 20px);
+}
+
+.ar-distance-selector {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  background: rgba(14, 16, 19, 0.86);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--glass-border-accent);
+  padding: 4px 7px;
+  border-radius: var(--radius-pill);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+}
+
+.ar-distance-selector.hidden {
+  display: none;
+}
+
+.ar-dist-label {
+  font-size: 0.64rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--accent-primary);
+  padding: 0 4px;
+}
+
+.ar-dist-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  padding: 3px 8px;
+  border-radius: var(--radius-pill);
+  font-family: var(--font-sans);
+  font-size: 0.66rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: all 0.16s ease;
+}
+
+.ar-dist-btn.active {
+  background: var(--accent-primary);
+  color: #0e1013;
+  font-weight: 700;
+  border-color: var(--accent-secondary);
+}
+
+.dimensions-hud-badge {
   display: inline-flex;
   align-items: center;
   gap: 6px;

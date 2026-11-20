@@ -27,9 +27,9 @@
     }
   </script>
   <script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/3.5.0/model-viewer.min.js"></script>
-  <script type="module" crossorigin src="/assets/main-DZ8rQGXg.js"></script>
+  <script type="module" crossorigin src="/assets/main-D7heNY77.js"></script>
   <link rel="modulepreload" crossorigin href="/assets/modulepreload-polyfill-B5Qt9EMX.js">
-  <link rel="stylesheet" crossorigin href="/assets/main-D3TQOQ99.css">
+  <link rel="stylesheet" crossorigin href="/assets/main-DS8WMVPr.css">
 </head>
 <body>
   <main class="app-shell">
@@ -96,10 +96,19 @@
         <nav id="category-tabs" class="category-tabs" aria-label="Categorías del menú"></nav>
       </header>
 
-      <!-- Etiqueta de cota activa en esquina inferior izquierda del visor -->
-      <div id="dimensions-hud-badge" class="dimensions-hud-badge hidden" aria-live="polite">
-        <span class="ruler-dot"></span>
-        <span id="dimensions-hud-text">⌀ 24 cm · Altura 6 cm</span>
+      <!-- Etiqueta de cota activa y selector discreto de distancia física en esquina inferior izquierda del visor -->
+      <div class="viewer-left-hud">
+        <div id="ar-distance-selector" class="ar-distance-selector hidden" role="group" aria-label="Distancia física de observación a la mesa">
+          <span class="ar-dist-label">Distancia 1:1:</span>
+          <button type="button" class="ar-dist-btn" data-distance="0.40" title="Observación de cerca a 40 cm del plato">Cerca (40 cm)</button>
+          <button type="button" class="ar-dist-btn active" data-distance="0.60" title="Comensal sentado a 60 cm del plato">Sentado (60 cm)</button>
+          <button type="button" class="ar-dist-btn" data-distance="0.85" title="Observación de pie a 85 cm de la mesa">De pie (85 cm)</button>
+        </div>
+
+        <div id="dimensions-hud-badge" class="dimensions-hud-badge hidden" aria-live="polite">
+          <span class="ruler-dot"></span>
+          <span id="dimensions-hud-text">⌀ 24 cm · Altura 6 cm</span>
+        </div>
       </div>
 
       <!-- Botones flotantes compactos y discretos en la esquina inferior derecha del visor 3D -->
@@ -124,6 +133,14 @@
             </svg>
             <span id="open-ar-btn-label">Ver en mi mesa (AR)</span>
             <span class="ar-scale-pill">1:1</span>
+          </button>
+
+          <button id="webxr-hit-test-btn" class="native-ar-secondary-btn hidden" type="button" title="Anclar en plano físico con WebXR Hit-Test (ARCore)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="10"></circle>
+              <circle cx="12" cy="12" r="3"></circle>
+            </svg>
+            <span>Anclar Plano (WebXR)</span>
           </button>
 
           <button id="exit-ar-btn" class="exit-ar-btn hidden" type="button" title="Apagar cámara y volver al visor 3D">
