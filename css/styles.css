@@ -109,6 +109,11 @@ body.ar-passthrough-active .viewer-stage {
   cursor: grabbing;
 }
 
+/* Utilidad global para ocultar controles mutuamente excluyentes sin solapamientos */
+.hidden {
+  display: none !important;
+}
+
 /* Contenedor de modales flotantes (Nutrición, Visor AR Nativo y Comanda) */
 .ui-layer {
   position: fixed;
@@ -126,8 +131,6 @@ body.ar-passthrough-active .viewer-stage {
 .exit-ar-btn,
 .native-ar-secondary-btn,
 .dimensions-toggle-btn,
-.ar-distance-selector,
-.ar-dist-btn,
 .dish-detail-card,
 .dish-options-container,
 .dishes-carousel,
@@ -161,7 +164,7 @@ body.ar-passthrough-active .viewer-stage {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  background: rgba(14, 16, 19, 0.76);
+  background: rgba(14, 16, 19, 0.78);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   border: 1px solid var(--glass-border);
@@ -171,7 +174,7 @@ body.ar-passthrough-active .viewer-stage {
 }
 
 body.ar-passthrough-active .brand-row {
-  background: rgba(14, 16, 19, 0.55);
+  background: rgba(14, 16, 19, 0.58);
 }
 
 body.ar-passthrough-active .category-tabs {
@@ -183,6 +186,13 @@ body.ar-passthrough-active .category-tabs {
   align-items: center;
   gap: 9px;
   min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.brand > div {
+  min-width: 0;
+  overflow: hidden;
 }
 
 .brand-dot {
@@ -199,8 +209,9 @@ body.ar-passthrough-active .category-tabs {
   font-weight: 600;
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
+  min-width: 0;
 }
 
 .brand-serif {
@@ -208,6 +219,9 @@ body.ar-passthrough-active .category-tabs {
   font-weight: 600;
   letter-spacing: 0.02em;
   color: #ffffff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .brand-badge {
@@ -221,9 +235,11 @@ body.ar-passthrough-active .category-tabs {
   background: rgba(197, 160, 89, 0.1);
   color: var(--accent-primary);
   border: 1px solid rgba(197, 160, 89, 0.28);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
-@media (max-width: 520px) {
+@media (max-width: 620px) {
   .brand-badge {
     display: none;
   }
@@ -234,7 +250,7 @@ body.ar-passthrough-active .category-tabs {
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
-  margin-top: 1px;
+  margin-top: 2px;
 }
 
 .table-context-badge {
@@ -243,6 +259,7 @@ body.ar-passthrough-active .category-tabs {
   color: var(--accent-secondary);
   font-weight: 600;
   letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 
 .ws-status-badge {
@@ -258,6 +275,7 @@ body.ar-passthrough-active .category-tabs {
   border: 1px solid var(--glass-border);
   background: rgba(255, 255, 255, 0.03);
   color: var(--text-muted);
+  white-space: nowrap;
 }
 
 .ws-status-badge.online {
@@ -292,6 +310,7 @@ body.ar-passthrough-active .category-tabs {
   font-size: 0.74rem;
   font-weight: 600;
   cursor: pointer;
+  white-space: nowrap;
   transition: transform 0.18s ease, background 0.2s ease, border-color 0.2s ease;
 }
 
@@ -304,7 +323,7 @@ body.ar-passthrough-active .category-tabs {
   transform: scale(0.96);
 }
 
-@media (max-width: 420px) {
+@media (max-width: 480px) {
   .call-waiter-btn span {
     display: none;
   }
@@ -326,6 +345,7 @@ body.ar-passthrough-active .category-tabs {
   font-size: 0.75rem;
   font-weight: 600;
   cursor: pointer;
+  white-space: nowrap;
   transition: transform 0.18s ease, background 0.2s ease;
 }
 
@@ -358,7 +378,7 @@ body.ar-passthrough-active .category-tabs {
   gap: 6px;
   overflow-x: auto;
   scrollbar-width: none;
-  padding: 1px 0;
+  padding: 2px 0;
 }
 
 .category-tabs::-webkit-scrollbar {
@@ -367,7 +387,7 @@ body.ar-passthrough-active .category-tabs {
 
 .category-tab {
   border: 1px solid var(--glass-border);
-  background: rgba(14, 16, 19, 0.72);
+  background: rgba(14, 16, 19, 0.76);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   color: var(--text-muted);
@@ -389,31 +409,45 @@ body.ar-passthrough-active .category-tabs {
   box-shadow: 0 4px 12px rgba(197, 160, 89, 0.22);
 }
 
-/* Controles flotantes compactos y discretos en la esquina inferior derecha del visor 3D */
-.viewer-floating-controls {
+/* Barra inferior unificada del visor 3D/AR (distribuye badge e iconos en un solo contenedor flex sin superponerse) */
+.viewer-bottom-bar {
   position: absolute;
+  left: 10px;
   right: 10px;
   bottom: 10px;
   z-index: 10;
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 6px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: 980px;
+  margin: 0 auto;
+  pointer-events: none;
+}
+
+.viewer-hud-status {
+  display: flex;
+  align-items: center;
+  min-width: 0;
   pointer-events: none;
 }
 
 .viewer-buttons-row {
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 6px;
+  margin-left: auto;
+  pointer-events: none;
 }
 
 .ar-launch-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  background: rgba(14, 16, 19, 0.84);
+  background: rgba(14, 16, 19, 0.88);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid rgba(197, 160, 89, 0.48);
@@ -424,6 +458,7 @@ body.ar-passthrough-active .category-tabs {
   font-size: 0.73rem;
   font-weight: 600;
   cursor: pointer;
+  white-space: nowrap;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
   transition: transform 0.18s ease, border-color 0.2s ease, background 0.2s ease;
 }
@@ -451,7 +486,7 @@ body.ar-passthrough-active .category-tabs {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  background: rgba(153, 27, 27, 0.9);
+  background: rgba(153, 27, 27, 0.92);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid rgba(248, 113, 113, 0.45);
@@ -462,12 +497,13 @@ body.ar-passthrough-active .category-tabs {
   font-size: 0.74rem;
   font-weight: 600;
   cursor: pointer;
+  white-space: nowrap;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
   transition: transform 0.18s ease, background 0.2s ease;
 }
 
 .exit-ar-btn:hover {
-  background: rgba(185, 28, 28, 0.95);
+  background: rgba(185, 28, 28, 0.96);
 }
 
 .exit-ar-btn:active {
@@ -478,7 +514,7 @@ body.ar-passthrough-active .category-tabs {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  background: rgba(14, 16, 19, 0.84);
+  background: rgba(14, 16, 19, 0.88);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--glass-border-accent);
@@ -489,6 +525,8 @@ body.ar-passthrough-active .category-tabs {
   font-size: 0.72rem;
   font-weight: 600;
   cursor: pointer;
+  white-space: nowrap;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
   transition: all 0.2s ease;
 }
 
@@ -496,7 +534,7 @@ body.ar-passthrough-active .category-tabs {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  background: rgba(14, 16, 19, 0.78);
+  background: rgba(14, 16, 19, 0.84);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--glass-border);
@@ -507,83 +545,24 @@ body.ar-passthrough-active .category-tabs {
   font-size: 0.73rem;
   font-weight: 600;
   cursor: pointer;
+  white-space: nowrap;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
   transition: all 0.2s ease;
 }
 
 .dimensions-toggle-btn.active {
-  background: rgba(197, 160, 89, 0.2);
+  background: rgba(197, 160, 89, 0.22);
   border-color: var(--accent-primary);
   color: var(--accent-secondary);
-}
-
-/* HUD en la esquina inferior izquierda del visor 3D (Selector de Distancia AR 1:1 + Badge de Dimensiones) */
-.viewer-left-hud {
-  position: absolute;
-  left: 10px;
-  bottom: 10px;
-  z-index: 10;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
-  pointer-events: none;
-  max-width: calc(100% - 20px);
-}
-
-.ar-distance-selector {
-  display: inline-flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px;
-  background: rgba(14, 16, 19, 0.86);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid var(--glass-border-accent);
-  padding: 4px 7px;
-  border-radius: var(--radius-pill);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
-  pointer-events: auto;
-}
-
-.ar-distance-selector.hidden {
-  display: none;
-}
-
-.ar-dist-label {
-  font-size: 0.64rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--accent-primary);
-  padding: 0 4px;
-}
-
-.ar-dist-btn {
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid transparent;
-  color: var(--text-muted);
-  padding: 3px 8px;
-  border-radius: var(--radius-pill);
-  font-family: var(--font-sans);
-  font-size: 0.66rem;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  cursor: pointer;
-  transition: all 0.16s ease;
-}
-
-.ar-dist-btn.active {
-  background: var(--accent-primary);
-  color: #0e1013;
-  font-weight: 700;
-  border-color: var(--accent-secondary);
 }
 
 .dimensions-hud-badge {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  background: rgba(14, 16, 19, 0.84);
+  background: rgba(14, 16, 19, 0.88);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--glass-border-accent);
   color: var(--accent-secondary);
   padding: 5px 10px;
@@ -592,12 +571,9 @@ body.ar-passthrough-active .category-tabs {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
+  white-space: nowrap;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
   pointer-events: none;
-}
-
-.dimensions-hud-badge.hidden {
-  display: none;
 }
 
 .ruler-dot {
@@ -605,6 +581,7 @@ body.ar-passthrough-active .category-tabs {
   height: 6px;
   border-radius: 50%;
   background: var(--accent-primary);
+  flex-shrink: 0;
 }
 
 /* MITAD INFERIOR (42% vh con scroll independiente): Carrusel + Panel de detalles DEBAJO del visor 3D */
@@ -649,7 +626,12 @@ body.ar-passthrough-active .bottom-dock {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 10px;
+  gap: 12px;
+}
+
+.dish-header > div:first-child {
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .dish-category-tag {
@@ -665,17 +647,19 @@ body.ar-passthrough-active .bottom-dock {
   font-family: var(--font-display);
   font-size: 1.18rem;
   font-weight: 600;
-  line-height: 1.2;
+  line-height: 1.24;
   color: #ffffff;
+  overflow-wrap: break-word;
 }
 
 .dish-price {
   font-family: var(--font-sans);
-  font-size: 1rem;
+  font-size: 0.98rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: var(--accent-secondary);
   white-space: nowrap;
+  flex-shrink: 0;
   background: rgba(197, 160, 89, 0.1);
   border: 1px solid rgba(197, 160, 89, 0.28);
   padding: 5px 11px;
@@ -707,6 +691,8 @@ body.ar-passthrough-active .bottom-dock {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
   font-size: 0.69rem;
   font-weight: 600;
   color: var(--text-muted);
@@ -762,6 +748,7 @@ body.ar-passthrough-active .bottom-dock {
   align-items: center;
   justify-content: center;
   font-size: 0.56rem;
+  flex-shrink: 0;
 }
 
 .option-pill.checkbox .option-pill-indicator {
@@ -784,13 +771,14 @@ body.ar-passthrough-active .bottom-dock {
 
 .dish-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   padding-top: 2px;
 }
 
 .btn-primary,
 .btn-secondary {
-  flex: 1;
+  flex: 1 1 160px;
   padding: 10px 14px;
   border-radius: var(--radius-md);
   font-family: var(--font-sans);
@@ -804,6 +792,7 @@ body.ar-passthrough-active .bottom-dock {
   justify-content: center;
   gap: 7px;
   font-variant-numeric: tabular-nums;
+  text-align: center;
 }
 
 .btn-primary {
@@ -914,6 +903,9 @@ body.ar-passthrough-active .bottom-dock {
   transform: translate(-50%, -50%);
   width: calc(100% - 28px);
   max-width: 440px;
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
   background: rgba(14, 16, 19, 0.94);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
@@ -928,9 +920,9 @@ body.ar-passthrough-active .bottom-dock {
 .nutrition-panel.hidden,
 .ar-modal.hidden,
 .order-modal.hidden {
+  display: none !important;
   opacity: 0;
   pointer-events: none;
-  transform: translate(-50%, -46%) scale(0.96);
 }
 
 .nutrition-header,
@@ -938,6 +930,7 @@ body.ar-passthrough-active .bottom-dock {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
+  gap: 10px;
   margin-bottom: 14px;
 }
 
@@ -965,6 +958,7 @@ body.ar-passthrough-active .bottom-dock {
   background: rgba(255, 255, 255, 0.05);
   color: var(--text-main);
   cursor: pointer;
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1233,6 +1227,7 @@ model-viewer {
 
 .order-submit-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -1254,6 +1249,7 @@ model-viewer {
 }
 
 .loading-overlay.hidden {
+  display: none !important;
   opacity: 0;
 }
 
@@ -1272,19 +1268,21 @@ model-viewer {
   }
 }
 
-/* Notificación Toast */
+/* Notificación Toast (ubicada en la base sin tapar barra superior ni pestañas de categorías) */
 .toast {
   position: fixed;
-  top: 84px;
+  bottom: 14px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 50;
-  background: rgba(14, 16, 19, 0.95);
+  z-index: 60;
+  width: max-content;
+  max-width: calc(100% - 24px);
+  background: rgba(14, 16, 19, 0.96);
   border: 1px solid var(--accent-primary);
   color: var(--text-main);
   padding: 10px 18px;
   border-radius: var(--radius-pill);
-  font-size: 0.8rem;
+  font-size: 0.79rem;
   font-weight: 600;
   box-shadow: var(--shadow-soft);
   pointer-events: none;
@@ -1293,8 +1291,9 @@ model-viewer {
 }
 
 .toast.hidden {
+  display: none !important;
   opacity: 0;
-  transform: translate(-50%, -10px);
+  transform: translate(-50%, 10px);
 }
 
 /* Pantallas medianas y grandes (Tablet / Desktop) */
