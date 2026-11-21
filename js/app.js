@@ -41,7 +41,8 @@ export class Menu3DApp {
     this.isARPassthroughActive = false;
     this.arMediaStream = null;
     this.arVideoElement = document.getElementById('ar-camera-feed');
-    this.arViewingDistanceMeters = 0.60; // Distancia física por defecto: Sentado (60 cm = 0.60 m)
+    this.arViewingDistanceMeters = 0.52; // Distancia óptica base de referencia a la mesa (52 cm = 0.52 m)
+    this.arUserScaleFactor = 1.0; // Multiplicador de ajuste fino AR (1.0 = Escala 1:1 base calculada)
     this.studioDefaultFov = 42;
     this.isWebXRSupported = false;
     this.xrSession = null;
@@ -119,13 +120,13 @@ export class Menu3DApp {
   initScene() {
     this.scene = new THREE.Scene();
 
-    const width = (this.container && this.container.clientWidth) || window.innerWidth;
-    const height = (this.container && this.container.clientHeight) || Math.round(window.innerHeight * 0.58);
+    const width = Math.max(1, (this.container && this.container.clientWidth) || window.innerWidth);
+    const height = Math.max(1, (this.container && this.container.clientHeight) || Math.round(window.innerHeight * 0.58));
 
     this.camera = new THREE.PerspectiveCamera(
       42,
-      width / Math.max(height, 1),
-      0.02,
+      width / height,
+      0.015,
       50
     );
     this.camera.position.copy(this.targetCameraPos);
@@ -133,11 +134,18 @@ export class Menu3DApp {
     this.renderer = new THREE.WebGLRenderer({
       antialias: !this.perfProfile.isLite,
       alpha: true,
-      powerPreference: 'high-performance'
+      powerPreference: 'high-performance',
+      preserveDrawingBuffer: false
     });
+    this.renderer.autoClear = true;
+    this.renderer.autoClearColor = true;
+    this.renderer.autoClearDepth = true;
+    this.renderer.autoClearStencil = true;
     this.renderer.setClearColor(0x000000, 0);
-    this.renderer.setSize(width, height);
+    this.renderer.setScissorTest(false);
     this.renderer.setPixelRatio(this.perfProfile.maxPixelRatio);
+    this.renderer.setSize(width, height, false);
+    this.renderer.setViewport(0, 0, width, height);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.15;
@@ -175,6 +183,34 @@ export class Menu3DApp {
     if (typeof ResizeObserver !== 'undefined' && this.container) {
       this.stageResizeObserver = new ResizeObserver(() => this.onWindowResize());
       this.stageResizeObserver.observe(this.container);
+    }
+  }
+
+  /**
+   * Sincroniza viewport, scissor, pixelRatio y tamaño del canvas con el contenedor real
+   * y limpia explícitamente los buffers de color, profundidad y stencil en todos los dispositivos.
+   */
+  syncRendererViewportAndClear() {
+    if (!this.renderer || !this.camera) return;
+    const width = Math.max(1, (this.container && this.container.clientWidth) || window.innerWidth);
+    const height = Math.max(1, (this.container && this.container.clientHeight) || Math.round(window.innerHeight * 0.58));
+    const pr = this.perfProfile ? this.perfProfile.maxPixelRatio : Math.min(window.devicePixelRatio || 1, 1.5);
+
+    this.renderer.autoClear = true;
+    this.renderer.autoClearColor = true;
+    this.renderer.autoClearDepth = true;
+    this.renderer.autoClearStencil = true;
+    this.renderer.setClearColor(0x000000, 0);
+    this.renderer.setScissorTest(false);
+    this.renderer.setPixelRatio(pr);
+    this.renderer.setSize(width, height, false);
+    this.renderer.setViewport(0, 0, width, height);
+
+    this.camera.aspect = width / height;
+    this.camera.updateProjectionMatrix();
+
+    if (!this.xrSession) {
+      this.renderer.clear(true, true, true);
     }
   }
 
@@ -564,21 +600,55 @@ export class Menu3DApp {
 
   /**
    * d) Libera de la memoria VRAM todas las geometrías, materiales y texturas
-   * del modelo anterior antes de cargar el siguiente plato.
+   * del modelo anterior y limpia el buffer WebGL antes de cargar el siguiente plato.
    */
   disposeCurrentModel() {
-    if (!this.currentModel) return;
+    if (this.currentModel) {
+      this.currentModel.visible = false;
+      this.scene.remove(this.currentModel);
+      this.disposeObjectResources(this.currentModel);
+      this.currentModel = null;
+    }
 
-    this.scene.remove(this.currentModel);
-    this.disposeObjectResources(this.currentModel);
-    this.currentModel = null;
+    // Barrido preventivo de cualquier grupo de plato huérfano en escena
+    if (this.scene) {
+      const strayModels = this.scene.children.filter(
+        (child) => child.userData && child.userData.isDishModel
+      );
+      strayModels.forEach((obj) => {
+        obj.visible = false;
+        this.scene.remove(obj);
+        this.disposeObjectResources(obj);
+      });
+    }
+
+    if (this.renderer && !this.xrSession) {
+      this.renderer.clear(true, true, true);
+    }
   }
 
   disposeDimensionsGuide() {
-    if (!this.dimensionsGuideGroup) return;
-    this.scene.remove(this.dimensionsGuideGroup);
-    this.disposeObjectResources(this.dimensionsGuideGroup);
-    this.dimensionsGuideGroup = null;
+    if (this.dimensionsGuideGroup) {
+      this.dimensionsGuideGroup.visible = false;
+      this.scene.remove(this.dimensionsGuideGroup);
+      this.disposeObjectResources(this.dimensionsGuideGroup);
+      this.dimensionsGuideGroup = null;
+    }
+
+    if (this.scene) {
+      const strayGuides = this.scene.children.filter(
+        (child) => child.name === 'dimensions-guide-3d'
+      );
+      strayGuides.forEach((obj) => {
+        obj.visible = false;
+        this.scene.remove(obj);
+        this.disposeObjectResources(obj);
+      });
+    }
+
+    if (this.renderer && !this.xrSession) {
+      this.renderer.clear(true, true, true);
+    }
   }
 
   disposeObjectResources(rootObj) {
@@ -606,7 +676,7 @@ export class Menu3DApp {
 
   /**
    * Selecciona un plato por ID, inicializa sus variantes por defecto, actualiza la UI,
-   * dispara la transición de cámara y carga el modelo 3D.
+   * calcula su escala final mientras `visible = false` y lo muestra sin fotograma gigante.
    */
   async selectDish(dishId) {
     const dish = this.dishes.find((item) => item.id === dishId);
@@ -618,9 +688,12 @@ export class Menu3DApp {
     this.initDishDefaultOptions(dish);
     this.updateDishUI(dish);
     this.highlightActiveCard(dish.id);
-    this.transitionCameraTo(dish.cameraConfig);
+    if (!this.isARPassthroughActive && !this.xrSession) {
+      this.transitionCameraTo(dish.cameraConfig);
+    }
 
     this.setLoading(true, `Preparando ${dish.nombre}...`);
+    this.disposeDimensionsGuide();
     this.disposeCurrentModel();
 
     try {
@@ -630,6 +703,11 @@ export class Menu3DApp {
         this.disposeObjectResources(modelGroup);
         return;
       }
+
+      // Mantener oculto mientras se calcula su Box3 y escala final para eliminar cualquier salto gigante
+      modelGroup.visible = false;
+      modelGroup.userData.isDishModel = true;
+      this.getOrComputeIntrinsicMetrics(modelGroup);
 
       this.currentModel = modelGroup;
       this.currentModelCameFromGLB = cameFromGLB;
@@ -641,8 +719,10 @@ export class Menu3DApp {
         this.applyStudioNormalizedScale(dish);
       }
 
-      // Actualizar guía 3D de dimensiones si está activa
+      // Actualizar guía 3D de dimensiones y control AR si están activos
       this.updateDimensionsGuide(dish);
+      this.updateARCalibratorUI(dish);
+      this.syncRendererViewportAndClear();
 
       // Preparar modelo GLB en escala real 1:1 para el visor AR (@google/model-viewer)
       await this.prepareARModelSource(dish, modelGroup, cameFromGLB);
@@ -899,45 +979,133 @@ export class Menu3DApp {
   }
 
   /**
+   * Calcula y almacena en caché una sola vez el `Box3` intrínseco sin escalar del modelo (`scale = 1, rot = 0`)
+   * mientras `visible = false`, evitando recalcular AABBs rotados o provocar fotogramas gigantes en escena.
+   */
+  getOrComputeIntrinsicMetrics(modelGroup = this.currentModel) {
+    if (!modelGroup) {
+      return { rawSpan: 2.08, rawHeight: 0.52, centerX: 0, centerZ: 0, minY: 0 };
+    }
+    if (modelGroup.userData && modelGroup.userData.intrinsicMetrics) {
+      return modelGroup.userData.intrinsicMetrics;
+    }
+
+    const prevVisible = modelGroup.visible;
+    const prevRotY = modelGroup.rotation.y;
+    modelGroup.visible = false;
+    modelGroup.scale.setScalar(1);
+    modelGroup.position.set(0, 0, 0);
+    modelGroup.rotation.set(0, 0, 0);
+    modelGroup.updateMatrixWorld(true);
+
+    const rawBox = new THREE.Box3().setFromObject(modelGroup);
+    const rawSize = rawBox.getSize(new THREE.Vector3());
+    const rawCenter = rawBox.getCenter(new THREE.Vector3());
+
+    const metrics = {
+      rawSpan: Math.max(rawSize.x, rawSize.z, 0.001),
+      rawHeight: Math.max(rawSize.y, 0.001),
+      centerX: Number.isFinite(rawCenter.x) ? rawCenter.x : 0,
+      centerZ: Number.isFinite(rawCenter.z) ? rawCenter.z : 0,
+      minY: Number.isFinite(rawBox.min.y) ? rawBox.min.y : 0
+    };
+
+    modelGroup.userData.intrinsicMetrics = metrics;
+    modelGroup.rotation.y = prevRotY;
+    modelGroup.visible = prevVisible;
+    return metrics;
+  }
+
+  /**
    * Normaliza el modelo activo (`this.currentModel`, ya sea `.glb` LiDAR en metros reales o procedural)
-   * para la vista 3D de estudio, respetando sus dimensiones reales cargadas (`anchoCm`, `altoCm`)
-   * y apoyando su base limpiamente sobre `y = 0`.
+   * para la vista 3D de estudio mientras permanece oculto (`visible = false`), respetando sus dimensiones
+   * reales cargadas (`anchoCm`, `altoCm`) y apoyando su base limpiamente sobre `y = 0`.
    */
   applyStudioNormalizedScale(dish = this.currentDish) {
     if (!this.currentModel) return;
 
+    this.currentModel.visible = false;
     const { widthMeters } = this.getDishRealDimensions(dish);
+    const { rawSpan, centerX, centerZ, minY } = this.getOrComputeIntrinsicMetrics(this.currentModel);
+
     // En el estudio 3D, un plato de 24 cm (0.24 m) equivale a un diámetro base de 2.08 unidades
     const studioTargetSpan = (widthMeters / 0.24) * 2.08 * ((dish && dish.escala) || 1.0);
+    const studioScale = studioTargetSpan / rawSpan;
 
-    this.currentModel.scale.setScalar(1);
-    this.currentModel.position.set(0, 0, 0);
-    this.currentModel.updateMatrixWorld(true);
-
-    const rawBox = new THREE.Box3().setFromObject(this.currentModel);
-    const rawSize = rawBox.getSize(new THREE.Vector3());
-    const rawHorizontalSpan = Math.max(rawSize.x, rawSize.z, 0.001);
-
-    const studioScale = studioTargetSpan / rawHorizontalSpan;
     this.currentModel.scale.setScalar(studioScale);
+    this.currentModel.position.set(
+      -centerX * studioScale,
+      -minY * studioScale,
+      -centerZ * studioScale
+    );
     this.currentModel.updateMatrixWorld(true);
-
-    const scaledBox = new THREE.Box3().setFromObject(this.currentModel);
-    const scaledCenter = scaledBox.getCenter(new THREE.Vector3());
-    this.currentModel.position.x = -scaledCenter.x;
-    this.currentModel.position.z = -scaledCenter.z;
-    this.currentModel.position.y = -scaledBox.min.y;
-    this.currentModel.updateMatrixWorld(true);
+    this.currentModel.visible = true;
 
     if (this.contactShadow) {
       this.contactShadow.position.set(0, 0.001, 0);
       this.contactShadow.scale.setScalar(studioTargetSpan / 2.08);
     }
+
+    if (this.renderer && !this.xrSession) {
+      this.renderer.clear(true, true, true);
+    }
+  }
+
+  /**
+   * Actualiza el control compacto de calibración AR (`#ar-scale-calibrator`) con la medida real del plato
+   * (ej. `⌀ 24×6 cm`) y el estado del botón `1:1`.
+   */
+  updateARCalibratorUI(dish = this.currentDish) {
+    const calibrator = document.getElementById('ar-scale-calibrator');
+    const measureEl = document.getElementById('ar-calibrator-measure');
+    const resetBtn = document.getElementById('ar-scale-reset-btn');
+    const isAR = Boolean(this.isARPassthroughActive || this.xrSession);
+
+    if (calibrator) {
+      calibrator.classList.toggle('hidden', !isAR);
+    }
+
+    if (measureEl && dish) {
+      const { anchoCm, altoCm } = this.getDishRealDimensions(dish);
+      const effectiveCm = Math.round(anchoCm * (this.arUserScaleFactor || 1.0));
+      measureEl.textContent =
+        Math.abs((this.arUserScaleFactor || 1.0) - 1.0) < 0.01
+          ? `⌀ ${anchoCm}×${altoCm} cm`
+          : `⌀ ${effectiveCm} cm (base ${anchoCm} cm)`;
+    }
+
+    if (resetBtn) {
+      const isBase = Math.abs((this.arUserScaleFactor || 1.0) - 1.0) < 0.01;
+      resetBtn.classList.toggle('active', isBase);
+      resetBtn.textContent = isBase ? '1:1' : `${Math.round((this.arUserScaleFactor || 1.0) * 100)}%`;
+    }
+  }
+
+  /**
+   * Ajuste fino instantáneo en modo AR (`-`, `+` o reset `1:1`) para comparar contra la mano o mesa física
+   * en cualquier dispositivo sin residuos visuales.
+   */
+  adjustARScaleFactor(deltaOrReset = 'reset') {
+    if (deltaOrReset === 'reset') {
+      this.arUserScaleFactor = 1.0;
+    } else {
+      const next = (this.arUserScaleFactor || 1.0) + Number(deltaOrReset || 0);
+      this.arUserScaleFactor = Number(THREE.MathUtils.clamp(next, 0.52, 1.75).toFixed(2));
+    }
+
+    this.normalizeModelToRealMetricMeters(this.currentDish);
+    if (this.xrSession && this.lastXrHitPose) {
+      this.anchorModelAtWebXRHitPose(this.lastXrHitPose);
+    } else {
+      this.updateDimensionsGuide(this.currentDish);
+    }
+    this.updateARCalibratorUI(this.currentDish);
+    this.syncRendererViewportAndClear();
   }
 
   /**
    * 2. Construye o actualiza la guía visual 3D de escala y dimensiones ("📏 Dimensiones")
-   * adaptándose automáticamente al `Box3` actual del modelo (tanto en estudio 3D como en AR 1:1 en metros).
+   * usando dimensiones determinísticas (sin depender de un AABB rotado ni dejar sprites gigantes).
    */
   updateDimensionsGuide(dish = this.currentDish) {
     this.disposeDimensionsGuide();
@@ -950,12 +1118,11 @@ export class Menu3DApp {
 
     const { anchoCm: diamCm, altoCm: heightCm, widthMeters, heightMeters } = this.getDishRealDimensions(dish);
     const isAR = Boolean(this.isARPassthroughActive || this.xrSession);
-    const summaryLabel = isAR
-      ? `Escala 1:1 · ⌀ ${diamCm} cm · Alto ${heightCm} cm`
-      : `⌀ ${diamCm} cm · Altura ${heightCm} cm`;
+    const summaryLabel = `⌀ ${diamCm} cm · Altura ${heightCm} cm`;
 
     if (hudText) hudText.textContent = summaryLabel;
-    if (hudBadge) hudBadge.classList.toggle('hidden', !this.showDimensionsGuide);
+    // En modo AR ya se muestra el control #ar-scale-calibrator con las medidas en la izquierda, evitando duplicar badges
+    if (hudBadge) hudBadge.classList.toggle('hidden', !this.showDimensionsGuide || isAR);
     if (toggleBtn) {
       toggleBtn.classList.toggle('active', this.showDimensionsGuide);
       toggleBtn.setAttribute('aria-pressed', String(this.showDimensionsGuide));
@@ -966,27 +1133,17 @@ export class Menu3DApp {
     const group = new THREE.Group();
     group.name = 'dimensions-guide-3d';
 
-    // Medir las dimensiones actuales del modelo en escena para que las cotas calcen al milímetro
-    let radius = isAR ? widthMeters * 0.5 : 1.04 * (dish.escala || 1.0);
-    let visualHeight = isAR ? heightMeters : Math.max(0.42, (heightCm / 24) * 2.05);
-    let anchorOrigin = new THREE.Vector3(0, 0, 0);
+    const scaleMult = isAR ? (this.arUserScaleFactor || 1.0) : 1.0;
+    const studioTargetSpan = (widthMeters / 0.24) * 2.08 * (dish.escala || 1.0);
+    const radius = isAR ? (widthMeters * scaleMult) * 0.52 : studioTargetSpan * 0.52;
+    const visualHeight = isAR
+      ? Math.max(heightMeters * scaleMult, radius * 0.24)
+      : Math.max(0.42, (heightCm / 24) * 2.05);
 
-    if (this.currentModel) {
-      const currentBox = new THREE.Box3().setFromObject(this.currentModel);
-      const currentSize = currentBox.getSize(new THREE.Vector3());
-      const currentCenter = currentBox.getCenter(new THREE.Vector3());
-      const horizontalSpan = Math.max(currentSize.x, currentSize.z);
-      if (horizontalSpan > 0.005) {
-        radius = horizontalSpan * 0.52;
-        visualHeight = Math.max(currentSize.y, radius * 0.22);
-        anchorOrigin.set(currentCenter.x, currentBox.min.y, currentCenter.z);
-      }
-    }
-
-    const margin = radius * 0.2;
+    const margin = radius * 0.22;
     const tick = radius * 0.08;
     const yLift = radius * 0.015;
-    const spriteWidth = Math.max(radius * 0.82, 0.085);
+    const spriteWidth = THREE.MathUtils.clamp(radius * 0.78, 0.075, 0.92);
 
     const lineMat = new THREE.LineBasicMaterial({
       color: 0xd4af37,
@@ -1044,7 +1201,10 @@ export class Menu3DApp {
     heightSprite.position.set(xSide + spriteWidth * 0.34, visualHeight * 0.55, 0);
     group.add(heightSprite);
 
-    group.position.copy(anchorOrigin);
+    if (this.xrSession && this.lastXrHitPosition) {
+      group.position.copy(this.lastXrHitPosition);
+    }
+
     this.dimensionsGuideGroup = group;
     this.scene.add(this.dimensionsGuideGroup);
   }
@@ -1079,7 +1239,8 @@ export class Menu3DApp {
     const mat = new THREE.SpriteMaterial({
       map: texture,
       transparent: true,
-      depthTest: false
+      depthTest: true,
+      depthWrite: false
     });
     const sprite = new THREE.Sprite(mat);
     sprite.scale.set(spriteWidth, spriteWidth * 0.25, 1);
@@ -1089,11 +1250,15 @@ export class Menu3DApp {
   /**
    * Intenta cargar el modelo .glb local (ej. exportado con LiDAR desde iPhone en metros reales)
    * y, si aún no existe en disco, genera automáticamente el modelo 3D estilizado procedural.
+   * Mantiene `visible = false` hasta que se calcule su escala final.
    */
   loadGLBOrFallback(dish) {
     return new Promise((resolve) => {
       if (!dish.ruta_modelo_glb) {
-        resolve({ modelGroup: this.createProceduralDish(dish), cameFromGLB: false });
+        const proc = this.createProceduralDish(dish);
+        proc.visible = false;
+        this.getOrComputeIntrinsicMetrics(proc);
+        resolve({ modelGroup: proc, cameFromGLB: false });
         return;
       }
 
@@ -1101,21 +1266,17 @@ export class Menu3DApp {
         dish.ruta_modelo_glb,
         (gltf) => {
           const root = gltf.scene;
+          root.visible = false;
           root.scale.setScalar(1);
           root.position.set(0, 0, 0);
+          root.rotation.set(0, 0, 0);
           root.updateMatrixWorld(true);
 
-          const box = new THREE.Box3().setFromObject(root);
-          const size = box.getSize(new THREE.Vector3());
-          const center = box.getCenter(new THREE.Vector3());
-          root.position.x -= center.x;
-          root.position.z -= center.z;
-          root.position.y -= box.min.y;
-          root.updateMatrixWorld(true);
+          const metrics = this.getOrComputeIntrinsicMetrics(root);
 
           // Si el .glb proviene de un escaneo LiDAR en metros reales (0.08 m a 0.65 m)
           // y el plato no tenía dimensiones explícitas, sincronizar sus centímetros reales
-          const rawSpanMeters = Math.max(size.x, size.z);
+          const rawSpanMeters = metrics.rawSpan;
           const dimsObj = dish.dimensiones || dish.dimensiones_cm || {};
           const hasExplicitWidth = Boolean(
             Number(dish.diametro_cm) ||
@@ -1125,7 +1286,7 @@ export class Menu3DApp {
           );
           if (!hasExplicitWidth && rawSpanMeters >= 0.08 && rawSpanMeters <= 0.65) {
             dish.diametro_cm = Math.round(rawSpanMeters * 100);
-            dish.altura_cm = Math.max(2, Math.round(size.y * 100));
+            dish.altura_cm = Math.max(2, Math.round(metrics.rawHeight * 100));
             this.updateDishUI(dish);
           }
 
@@ -1134,6 +1295,8 @@ export class Menu3DApp {
         undefined,
         () => {
           const proceduralModel = this.createProceduralDish(dish);
+          proceduralModel.visible = false;
+          this.getOrComputeIntrinsicMetrics(proceduralModel);
           resolve({ modelGroup: proceduralModel, cameFromGLB: false });
         }
       );
@@ -1154,17 +1317,8 @@ export class Menu3DApp {
     }
 
     const { widthMeters } = this.getDishRealDimensions(dish);
-
-    // Medir el ancho/diámetro base del modelo en escala 1 para calcular el factor exacto a metros reales
-    const measureClone = modelGroup.clone(true);
-    measureClone.scale.setScalar(1);
-    measureClone.position.set(0, 0, 0);
-    measureClone.updateMatrixWorld(true);
-    const rawBox = new THREE.Box3().setFromObject(measureClone);
-    const rawSize = rawBox.getSize(new THREE.Vector3());
-    const rawSpan = Math.max(rawSize.x, rawSize.z, 0.001);
-    const exactMetricFactor = Number((widthMeters / rawSpan).toFixed(5));
-    this.disposeObjectResources(measureClone);
+    const { rawSpan } = this.getOrComputeIntrinsicMetrics(modelGroup);
+    const exactMetricFactor = Number((widthMeters / Math.max(rawSpan, 0.001)).toFixed(5));
 
     if (cameFromGLB && dish.ruta_modelo_glb) {
       modelViewer.src = dish.ruta_modelo_glb;
@@ -1174,6 +1328,7 @@ export class Menu3DApp {
 
     modelViewer.scale = '1 1 1';
     const arClone = modelGroup.clone(true);
+    arClone.visible = true;
     arClone.scale.setScalar(exactMetricFactor);
     arClone.rotation.set(0, 0, 0);
     arClone.updateMatrixWorld(true);
@@ -1199,101 +1354,84 @@ export class Menu3DApp {
   }
 
   /**
-   * 1. Normalización Métrica Real 1:1 por Plato:
-   * Calcula el `Box3` real del modelo `.glb` (ej. escaneado con iPhone LiDAR) o procedural
-   * y escala `this.currentModel` para que su diámetro/ancho mayor coincida exactamente en metros
-   * con `anchoCm / 100` (`1 unidad = 1 metro`), apoyando su base limpiamente sobre la mesa (`y = 0`).
+   * 1. Normalización Métrica Real 1:1 por Plato (sin fotograma gigante intermedio):
+   * Mantiene `visible = false` mientras aplica la escala métrica exacta (`(anchoCm / 100) * arUserScaleFactor`)
+   * a partir de las métricas intrínsecas en caché y apoya la base estrictamente en `y = 0` (mesa),
+   * activando `visible = true` únicamente cuando la matriz final ya está calculada.
    */
   normalizeModelToRealMetricMeters(dish = this.currentDish) {
     if (!this.currentModel) return 0.24;
 
+    this.currentModel.visible = false;
     const { widthMeters } = this.getDishRealDimensions(dish);
+    const effectiveWidthMeters = widthMeters * (this.arUserScaleFactor || 1.0);
+    const { rawSpan, centerX, centerZ, minY } = this.getOrComputeIntrinsicMetrics(this.currentModel);
 
-    this.currentModel.scale.setScalar(1);
-    this.currentModel.position.set(0, 0, 0);
-    this.currentModel.visible = true;
-    this.currentModel.updateMatrixWorld(true);
-
-    const rawBox = new THREE.Box3().setFromObject(this.currentModel);
-    const rawSize = rawBox.getSize(new THREE.Vector3());
-    const rawHorizontalSpan = Math.max(rawSize.x, rawSize.z, 0.001);
-
-    const metricScale = widthMeters / rawHorizontalSpan;
+    const metricScale = effectiveWidthMeters / Math.max(rawSpan, 0.001);
     this.currentModel.scale.setScalar(metricScale);
-    this.currentModel.updateMatrixWorld(true);
 
     // Centrar en (X=0, Z=0) y apoyar la base exactamente en Y=0 (plano de la mesa)
-    const scaledBox = new THREE.Box3().setFromObject(this.currentModel);
-    const scaledCenter = scaledBox.getCenter(new THREE.Vector3());
-    this.currentModel.position.x = -scaledCenter.x;
-    this.currentModel.position.z = -scaledCenter.z;
-    this.currentModel.position.y = -scaledBox.min.y;
+    this.currentModel.position.set(
+      -centerX * metricScale,
+      -minY * metricScale,
+      -centerZ * metricScale
+    );
     this.currentModel.updateMatrixWorld(true);
+    this.currentModel.visible = true;
 
     if (this.contactShadow) {
       this.contactShadow.position.set(0, 0.001, 0);
-      this.contactShadow.scale.setScalar(widthMeters / 2.08);
+      this.contactShadow.scale.setScalar(effectiveWidthMeters / 2.08);
     }
 
-    return widthMeters;
+    return effectiveWidthMeters;
   }
 
   /**
-   * Calcula el FOV vertical ópticamente calibrado (62° base de cámara móvil trasera,
-   * ajustado dinámicamente según el aspect ratio real de `#viewer-stage` y el recorte `object-fit: cover`
-   * del stream de video) para evitar distorsión en pantallas altas, compactas o tablets.
+   * Calcula el FOV vertical universalmente calibrado para cualquier pantalla (Android, iPhone, tablet o PC):
+   * Garantiza que a la distancia física de referencia a la mesa (`D = 0.52 m`), el eje menor del visor
+   * encuadre siempre exactamente `0.48 m` (`48 cm`) de superficie real de mesa.
+   * Así, un plato de `24 cm` ocupa siempre el `50%` del ancho de mesa (igual que junto a una mano real),
+   * sin importar la relación de aspecto ni la marca del dispositivo.
    */
-  computeCalibratedARVerticalFov() {
-    const width = (this.container && this.container.clientWidth) || window.innerWidth;
-    const height =
-      (this.container && this.container.clientHeight) || Math.round(window.innerHeight * 0.72);
-    const containerAspect = width / Math.max(height, 1);
+  computeCalibratedARVerticalFov(referenceDistanceMeters = 0.52) {
+    const width = Math.max(1, (this.container && this.container.clientWidth) || window.innerWidth);
+    const height = Math.max(
+      1,
+      (this.container && this.container.clientHeight) || Math.round(window.innerHeight * 0.72)
+    );
+    const aspect = width / height;
 
-    // Ángulo vertical real de cámara trasera móvil estándar (~26mm equiv): 62°
-    const baseVerticalFovDeg = 62;
-    const baseVerticalFovRad = THREE.MathUtils.degToRad(baseVerticalFovDeg);
+    // Ancho físico de mesa encuadrado en el eje de referencia a 52 cm de distancia: 48 cm (0.48 m)
+    const referenceTableSpanMeters = 0.48;
+    const halfSpanOverDist = (referenceTableSpanMeters * 0.5) / Math.max(referenceDistanceMeters, 0.25);
 
-    const videoEl = this.arVideoElement;
-    const rawVw = (videoEl && videoEl.videoWidth) || 720;
-    const rawVh = (videoEl && videoEl.videoHeight) || 1280;
-    const videoAspect =
-      rawVw > rawVh && containerAspect < 1
-        ? rawVh / Math.max(rawVw, 1)
-        : rawVw / Math.max(rawVh, 1);
-
-    if (containerAspect > videoAspect) {
-      const visibleVerticalFraction = videoAspect / containerAspect;
-      const calibratedRad =
-        2 * Math.atan(Math.tan(baseVerticalFovRad / 2) * visibleVerticalFraction);
-      return THREE.MathUtils.clamp(THREE.MathUtils.radToDeg(calibratedRad), 34, 72);
+    let vFovRad;
+    if (aspect <= 1) {
+      // En teléfonos verticales (portrait), el ancho horizontal es el eje menor y siempre equivale a 48 cm de mesa
+      vFovRad = 2 * Math.atan(halfSpanOverDist / Math.max(aspect, 0.32));
+    } else {
+      // En tablets horizontales o escritorio (landscape), el alto vertical es el eje menor y equivale a 48 cm de mesa
+      vFovRad = 2 * Math.atan(halfSpanOverDist);
     }
 
-    return baseVerticalFovDeg;
+    return THREE.MathUtils.clamp(THREE.MathUtils.radToDeg(vFovRad), 32, 78);
   }
 
   /**
-   * Calcula automáticamente la distancia óptima de cámara a mesa (`y = 0`) en modo AR Passthrough
-   * a partir de las dimensiones reales cargadas en el plato (`anchoCm`, `altoCm`) y el FOV/aspect ratio
-   * del viewport, sin que el usuario tenga que calibrar distancias manualmente.
+   * Calcula la distancia física constante de referencia de la cámara al centro de la mesa (`y = 0`)
+   * en modo AR Passthrough (`0.52 m` = `52 cm`, ampliándose suavemente solo si el plato supera los 38 cm).
+   * Al mantener una referencia física constante, un plato de 16 cm se ve más pequeño que uno de 24 cm
+   * y uno de 30 cm más grande, respetando el tamaño real 1:1 en todos los dispositivos.
    */
   computeAutoARPassthroughDistance(dish = this.currentDish) {
-    const { widthMeters, heightMeters } = this.getDishRealDimensions(dish);
-    const width = (this.container && this.container.clientWidth) || window.innerWidth;
-    const height =
-      (this.container && this.container.clientHeight) || Math.round(window.innerHeight * 0.72);
-    const aspect = width / Math.max(height, 1);
-
-    const vFovDeg = this.computeCalibratedARVerticalFov();
-    const vFovRad = THREE.MathUtils.degToRad(vFovDeg);
-    const hFovRad = 2 * Math.atan(Math.tan(vFovRad / 2) * aspect);
-    const minFovRad = Math.min(vFovRad, hFovRad);
-
-    // Superficie física de mesa encuadrada (0.44 m de referencia para respetar la proporción real entre
-    // platos pequeños de 14 cm y platos grandes de 30+ cm, ampliándose automáticamente si el plato es mayor)
-    const targetTableSpanMeters = Math.max(0.44, widthMeters * 1.45, heightMeters * 2.1);
-    const rawDistance = (targetTableSpanMeters * 0.5) / Math.max(Math.tan(minFovRad * 0.5), 0.18);
-
-    return Number(THREE.MathUtils.clamp(rawDistance, 0.36, 0.92).toFixed(4));
+    const { widthMeters } = this.getDishRealDimensions(dish);
+    const effectiveWidth = widthMeters * (this.arUserScaleFactor || 1.0);
+    // Distancia ergonómica real del teléfono a la mesa: 52 cm (0.52 m)
+    if (effectiveWidth > 0.38) {
+      return Number(THREE.MathUtils.clamp(0.52 * (effectiveWidth / 0.36), 0.52, 0.88).toFixed(4));
+    }
+    return 0.52;
   }
 
   /**
@@ -1319,8 +1457,10 @@ export class Menu3DApp {
   anchorModelAtWebXRHitPose(hitPose) {
     if (!hitPose || !this.currentModel) return;
 
+    this.lastXrHitPose = hitPose;
     const hitMatrix = new THREE.Matrix4().fromArray(hitPose.transform.matrix);
     const hitPos = new THREE.Vector3().setFromMatrixPosition(hitMatrix);
+    this.lastXrHitPosition = hitPos.clone();
 
     this.normalizeModelToRealMetricMeters(this.currentDish);
     this.currentModel.position.add(hitPos);
@@ -1331,14 +1471,15 @@ export class Menu3DApp {
     }
 
     this.updateDimensionsGuide(this.currentDish);
+    this.updateARCalibratorUI(this.currentDish);
   }
 
   /**
    * Punto de entrada unificado al pulsar "Ver en mi mesa (AR) 1:1":
    * - Si el navegador/dispositivo soporta WebXR `immersive-ar` con `hit-test`, detecta el plano real
-   *   de la mesa y coloca/escala el plato 1:1 automáticamente usando la distancia real del rayo.
+   *   de la mesa y coloca/escala el plato 1:1 automáticamente.
    * - En caso contrario, inicia automáticamente el modo cámara passthrough (`getUserMedia`)
-   *   con cálculo automático de distancia y encuadre métrico según las dimensiones cargadas del plato.
+   *   con calibración óptica universal 1:1 y control de ajuste fino.
    */
   async launchAutoARMode() {
     if (this.isWebXRSupported && navigator.xr) {
@@ -1359,6 +1500,13 @@ export class Menu3DApp {
     }
 
     try {
+      // Ocultar modelo de estudio antes de cambiar de modo para evitar fotograma gigante inicial
+      if (this.currentModel) {
+        this.currentModel.visible = false;
+      }
+      this.disposeDimensionsGuide();
+      this.syncRendererViewportAndClear();
+
       const overlayRoot = document.getElementById('viewer-stage') || document.body;
       const session = await navigator.xr.requestSession('immersive-ar', {
         requiredFeatures: ['hit-test'],
@@ -1368,6 +1516,10 @@ export class Menu3DApp {
 
       this.xrSession = session;
       this.xrAutoPlaced = false;
+      this.lastXrHitPose = null;
+      this.lastXrHitPosition = null;
+      this.arUserScaleFactor = 1.0;
+
       this.renderer.xr.enabled = true;
       this.renderer.xr.setReferenceSpaceType('local');
       await this.renderer.xr.setSession(session);
@@ -1381,10 +1533,12 @@ export class Menu3DApp {
       if (openArBtn) openArBtn.classList.add('hidden');
       if (exitArBtn) exitArBtn.classList.remove('hidden');
 
-      // Normalizar modelo activo a metros reales (1 unidad = 1 metro) con base en y = 0
+      // Escalar el modelo a metros reales pero mantenerlo oculto hasta que el primer hit-test detecte la mesa
       const widthMeters = this.normalizeModelToRealMetricMeters(this.currentDish);
-      this.showDimensionsGuide = true;
-      this.updateDimensionsGuide(this.currentDish);
+      if (this.currentModel) {
+        this.currentModel.visible = false;
+      }
+      this.updateARCalibratorUI(this.currentDish);
 
       // Crear retícula métrica del diámetro exacto del plato sobre el plano detectado
       const ringGeo = new THREE.RingGeometry(
@@ -1427,12 +1581,14 @@ export class Menu3DApp {
         this.xrReferenceSpace = null;
         this.xrSession = null;
         this.xrAutoPlaced = false;
+        this.lastXrHitPose = null;
+        this.lastXrHitPosition = null;
         this.renderer.xr.enabled = false;
         this.stopARPassthroughMode();
       });
 
       const { anchoCm, altoCm } = this.getDishRealDimensions(this.currentDish);
-      this.showToast(`Detectando mesa para proyectar 1:1 (⌀ ${anchoCm}×${altoCm} cm)...`);
+      this.showToast(`Apunta a la mesa para proyectar 1:1 (⌀ ${anchoCm}×${altoCm} cm)`);
     } catch (err) {
       console.warn('[WebXR Hit-Test] Fallback automático a AR Passthrough óptico:', err);
       await this.startARPassthroughMode();
@@ -1440,10 +1596,10 @@ export class Menu3DApp {
   }
 
   /**
-   * Activa el Modo Cámara Directa (AR Passthrough 1:1) con cálculo automático de distancia y escala métrica:
+   * Activa el Modo Cámara Directa (AR Passthrough 1:1) sin salto gigante ni residuos visuales:
+   * - Oculta el modelo de estudio y limpia los buffers WebGL antes de cambiar dimensiones del contenedor.
    * - Enciende la cámara trasera (`facingMode: 'environment'`) detrás del canvas transparente (`alpha: true`).
-   * - Normaliza el plato 3D a su escala métrica real (`anchoCm / 100` metros) apoyado en `y = 0`.
-   * - Calcula automáticamente la distancia de encuadre según las dimensiones cargadas del plato y el FOV del viewport.
+   * - Aplica la escala métrica 1:1 universal y posiciona la cámara antes de volver a hacer visible el plato.
    */
   async startARPassthroughMode() {
     if (this.isARPassthroughActive) {
@@ -1471,6 +1627,13 @@ export class Menu3DApp {
     }
 
     try {
+      // 1. Ocultar inmediatamente el modelo a escala de estudio y limpiar buffers para evitar cualquier flash gigante
+      if (this.currentModel) {
+        this.currentModel.visible = false;
+      }
+      this.disposeDimensionsGuide();
+      this.syncRendererViewportAndClear();
+
       let stream = null;
       try {
         stream = await navigator.mediaDevices.getUserMedia({
@@ -1490,6 +1653,7 @@ export class Menu3DApp {
 
       this.arMediaStream = stream;
       this.isARPassthroughActive = true;
+      this.arUserScaleFactor = 1.0;
 
       if (videoEl) {
         videoEl.srcObject = stream;
@@ -1498,21 +1662,26 @@ export class Menu3DApp {
       }
 
       document.body.classList.add('ar-passthrough-active');
-      this.renderer.setClearColor(0x000000, 0);
 
       if (openArBtn) openArBtn.classList.add('hidden');
       if (exitArBtn) exitArBtn.classList.remove('hidden');
       if (secondaryNativeBtn) secondaryNativeBtn.classList.remove('hidden');
 
-      // Activar cota dimensional 3D y aplicar escala métrica 1:1 y distancia automática sobre la mesa
-      this.showDimensionsGuide = true;
+      // 2. Sincronizar tamaño exacto del contenedor 72dvh y aplicar escala 1:1 antes de mostrar el modelo
+      this.syncRendererViewportAndClear();
       this.applyARMetricScaleAndCamera(activeDish);
+      this.updateARCalibratorUI(activeDish);
+      this.syncRendererViewportAndClear();
+
       if (activeDish) {
         const { anchoCm, altoCm } = this.getDishRealDimensions(activeDish);
-        this.showToast(`Proyección AR 1:1 en mesa (⌀ ${anchoCm} cm · Altura ${altoCm} cm)`);
+        this.showToast(`AR 1:1 en mesa · ⌀ ${anchoCm}×${altoCm} cm`);
       }
     } catch (err) {
       console.error('[AR Passthrough] Error accediendo a la cámara:', err);
+      if (this.currentModel) {
+        this.applyStudioNormalizedScale(activeDish);
+      }
       this.showToast('Permiso de cámara no disponible. Mostrando visor AR alternativo.');
       const arModal = document.getElementById('ar-modal');
       if (arModal) arModal.classList.remove('hidden');
@@ -1521,15 +1690,20 @@ export class Menu3DApp {
 
   /**
    * Calibra automáticamente la escala métrica real 1:1 del plato 3D (`anchoCm / 100` metros, base en `y = 0`),
-   * empata el FOV vertical con la óptica de la cámara móvil y posiciona la cámara a la distancia óptima
-   * calculada automáticamente en función de las dimensiones cargadas del plato.
+   * empata el FOV vertical universal con el viewport y posiciona la cámara mientras el modelo está oculto,
+   * haciéndolo visible únicamente cuando tanto la cámara como la escala 1:1 están listas.
    */
   applyARMetricScaleAndCamera(dish = this.currentDish) {
+    if (this.currentModel) {
+      this.currentModel.visible = false;
+    }
+
     this.renderer.setClearColor(0x000000, 0);
-    this.normalizeModelToRealMetricMeters(dish);
 
     if (this.xrSession) {
+      this.normalizeModelToRealMetricMeters(dish);
       this.updateDimensionsGuide(dish);
+      this.updateARCalibratorUI(dish);
       return;
     }
 
@@ -1537,14 +1711,20 @@ export class Menu3DApp {
     const autoDist = this.computeAutoARPassthroughDistance(dish);
     this.arViewingDistanceMeters = autoDist;
 
-    this.camera.fov = this.computeCalibratedARVerticalFov();
+    const width = Math.max(1, (this.container && this.container.clientWidth) || window.innerWidth);
+    const height = Math.max(
+      1,
+      (this.container && this.container.clientHeight) || Math.round(window.innerHeight * 0.72)
+    );
+    this.camera.aspect = width / height;
+    this.camera.fov = this.computeCalibratedARVerticalFov(autoDist);
     this.camera.updateProjectionMatrix();
 
-    // Ángulo natural de observación sobre la mesa (~38° de inclinación mirando al plato en y = 0)
-    const elevationRad = THREE.MathUtils.degToRad(38);
+    // Ángulo natural de observación sobre la mesa (~36° de inclinación mirando al plato en y = 0)
+    const elevationRad = THREE.MathUtils.degToRad(36);
     const camY = Number((autoDist * Math.sin(elevationRad)).toFixed(4));
     const camZ = Number((autoDist * Math.cos(elevationRad)).toFixed(4));
-    const lookAtY = Number((heightMeters * 0.18).toFixed(4));
+    const lookAtY = Number((heightMeters * 0.16).toFixed(4));
 
     this.isCameraTransitioning = false;
     this.targetCameraPos.set(0, camY, camZ);
@@ -1563,14 +1743,26 @@ export class Menu3DApp {
       this.controls.update();
     }
 
+    // Aplicar escala métrica 1:1 y activar visibilidad recién con cámara y matriz listas
+    this.normalizeModelToRealMetricMeters(dish);
     this.updateDimensionsGuide(dish);
+    this.updateARCalibratorUI(dish);
+
+    if (this.renderer) {
+      this.renderer.clear(true, true, true);
+    }
   }
 
   /**
-   * Detiene los tracks de video de la cámara (`track.stop()`), restaura el FOV de estudio (42°),
-   * reactiva el zoom manual y devuelve el plato a su escala normalizada de estudio.
+   * Detiene los tracks de video de la cámara (`track.stop()`), limpia buffers WebGL,
+   * restaura el FOV de estudio (42°), reactiva el zoom manual y devuelve el plato a su escala de estudio.
    */
   stopARPassthroughMode() {
+    if (this.currentModel) {
+      this.currentModel.visible = false;
+    }
+    this.disposeDimensionsGuide();
+
     if (this.arMediaStream) {
       this.arMediaStream.getTracks().forEach((track) => {
         try {
@@ -1588,6 +1780,7 @@ export class Menu3DApp {
     }
 
     this.isARPassthroughActive = false;
+    this.arUserScaleFactor = 1.0;
     document.body.classList.remove('ar-passthrough-active');
 
     const openArBtn = document.getElementById('open-ar-btn');
@@ -1598,9 +1791,11 @@ export class Menu3DApp {
     if (exitArBtn) exitArBtn.classList.add('hidden');
     if (secondaryNativeBtn) secondaryNativeBtn.classList.add('hidden');
 
-    // Restaurar FOV y controles de estudio
+    this.updateARCalibratorUI(this.currentDish);
+
+    // Restaurar FOV, viewport y controles de estudio
     this.camera.fov = this.studioDefaultFov || 42;
-    this.camera.updateProjectionMatrix();
+    this.syncRendererViewportAndClear();
 
     if (this.controls) {
       this.controls.enableZoom = true;
@@ -1614,6 +1809,7 @@ export class Menu3DApp {
       this.updateDimensionsGuide(this.currentDish);
     }
 
+    this.syncRendererViewportAndClear();
     this.showToast('Visor 3D de estudio restaurado');
   }
 
@@ -2358,6 +2554,34 @@ export class Menu3DApp {
       });
     }
 
+    // Controles compactos de ajuste fino en modo AR (- / 1:1 / +)
+    const arScaleDownBtn = document.getElementById('ar-scale-down-btn');
+    if (arScaleDownBtn) {
+      arScaleDownBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.adjustARScaleFactor(-0.08);
+      });
+    }
+
+    const arScaleResetBtn = document.getElementById('ar-scale-reset-btn');
+    if (arScaleResetBtn) {
+      arScaleResetBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.adjustARScaleFactor('reset');
+      });
+    }
+
+    const arScaleUpBtn = document.getElementById('ar-scale-up-btn');
+    if (arScaleUpBtn) {
+      arScaleUpBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.adjustARScaleFactor(0.08);
+      });
+    }
+
     const secondaryNativeArBtn = document.getElementById('secondary-native-ar-btn');
     if (secondaryNativeArBtn) {
       secondaryNativeArBtn.addEventListener('click', (e) => {
@@ -2447,19 +2671,19 @@ export class Menu3DApp {
     const width = (this.container && this.container.clientWidth) || window.innerWidth;
     const height = (this.container && this.container.clientHeight) || Math.round(window.innerHeight * 0.58);
     if (!width || !height) return;
-    this.camera.aspect = width / height;
-    this.renderer.setSize(width, height);
-    this.renderer.setPixelRatio(this.perfProfile ? this.perfProfile.maxPixelRatio : Math.min(window.devicePixelRatio || 1, 1.5));
+
+    this.syncRendererViewportAndClear();
 
     if (this.isARPassthroughActive) {
-      this.applyARMetricScaleAndCamera(this.currentDish);
-    } else {
+      this.camera.fov = this.computeCalibratedARVerticalFov(this.arViewingDistanceMeters || 0.52);
       this.camera.updateProjectionMatrix();
+      this.renderer.clear(true, true, true);
     }
   }
 
   /**
    * Bucle principal de renderizado (compatible con WebGL estándar y sesiones WebXR Hit-Test):
+   * - Limpia explícitamente buffers de color/profundidad/stencil (`clear(true, true, true)`) en cada frame.
    * - Interpola la cámara (lerp) al cambiar de plato.
    * - Si hay una sesión WebXR `immersive-ar` activa, usa el plano real detectado y las coordenadas
    *   reales del rayo/pose para colocar y escalar el plato 1:1 automáticamente.
@@ -2527,6 +2751,8 @@ export class Menu3DApp {
 
       if (!this.xrSession) {
         this.controls.update();
+        this.renderer.autoClear = true;
+        this.renderer.clear(true, true, true);
       }
       this.renderer.render(this.scene, this.camera);
     });

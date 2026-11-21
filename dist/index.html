@@ -27,9 +27,9 @@
     }
   </script>
   <script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/3.5.0/model-viewer.min.js"></script>
-  <script type="module" crossorigin src="/assets/main-Dld0kay8.js"></script>
+  <script type="module" crossorigin src="/assets/main-Cml5euSS.js"></script>
   <link rel="modulepreload" crossorigin href="/assets/modulepreload-polyfill-B5Qt9EMX.js">
-  <link rel="stylesheet" crossorigin href="/assets/main-Db3DVP82.css">
+  <link rel="stylesheet" crossorigin href="/assets/main-BOyPhpLn.css">
 </head>
 <body>
   <main class="app-shell">
@@ -102,6 +102,14 @@
           <div id="dimensions-hud-badge" class="dimensions-hud-badge hidden" aria-live="polite">
             <span class="ruler-dot"></span>
             <span id="dimensions-hud-text">⌀ 24 cm · Altura 6 cm</span>
+          </div>
+
+          <!-- Control compacto y discreto en modo AR: medida real + ajuste fino (- / 1:1 / +) -->
+          <div id="ar-scale-calibrator" class="ar-scale-calibrator hidden" role="group" aria-label="Ajuste fino de escala 1:1 en mesa">
+            <span id="ar-calibrator-measure" class="ar-calibrator-measure">⌀ 24 cm</span>
+            <button id="ar-scale-down-btn" class="ar-cal-btn" type="button" title="Reducir ajuste fino en mesa" aria-label="Reducir tamaño">−</button>
+            <button id="ar-scale-reset-btn" class="ar-cal-btn ar-cal-reset active" type="button" title="Restablecer escala métrica real 1:1" aria-label="Escala base 1:1">1:1</button>
+            <button id="ar-scale-up-btn" class="ar-cal-btn" type="button" title="Ampliar ajuste fino en mesa" aria-label="Ampliar tamaño">+</button>
           </div>
         </div>
 
