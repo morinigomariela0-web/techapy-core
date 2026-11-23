@@ -143,6 +143,7 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
+    emptyOutDir: false,
     minify: 'esbuild',
     cssMinify: true,
     rollupOptions: {

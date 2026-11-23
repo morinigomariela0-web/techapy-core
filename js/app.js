@@ -1,8 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
-import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 
 const CHANNEL_NAME = 'kuroshio_comandas_channel';
 const STORAGE_KEY = 'kuroshio_comandas_store';
@@ -78,21 +76,32 @@ export class Menu3DApp {
     this.baseRotationSpeed = 0.18;
 
     this.clock = new THREE.Clock();
+    this.glbCache = new Map(); // ruta_modelo_glb -> { sceneTemplate, intrinsicMetrics }
     this.perfProfile = this.detectPerformanceProfile();
     if (this.perfProfile.isLite) {
       document.body.classList.add('perf-lite');
     }
 
-    this.initScene();
-    this.initLights();
-    this.initContactShadow();
-    this.initLoaders();
-    this.initRealtimeComandaBus();
+    // 1. Vincular eventos de interfaz, sesión y bus de comandas ANTES de WebGL
+    // para garantizar que todos los botones respondan en < 1ms incluso si WebGL tarda o no está disponible.
     this.bindUIEvents();
     this.syncSessionContextUI();
+    this.initRealtimeComandaBus();
+
+    // 2. Inicializar motor 3D WebGL de forma resiliente
+    try {
+      this.initScene();
+      this.initLights();
+      this.initContactShadow();
+      this.initLoaders();
+      this.animate();
+    } catch (webglErr) {
+      console.warn('[Menu3DApp] WebGL en modo degradado o sin aceleración GPU:', webglErr);
+      this.setLoading(false);
+    }
+
     this.checkWebXRHitTestSupport();
     this.loadMenuData();
-    this.animate();
   }
 
   /**
@@ -277,16 +286,41 @@ export class Menu3DApp {
   }
 
   /**
-   * Inicializa GLTFLoader, DRACOLoader y GLTFExporter para AR 1:1.
+   * Inicializa GLTFLoader ligero. DRACOLoader, GLTFExporter y @google/model-viewer
+   * se cargan bajo demanda solo si se solicitan para no bloquear el primer renderizado.
    */
   initLoaders() {
-    this.dracoLoader = new DRACOLoader();
-    this.dracoLoader.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/libs/draco/');
-
     this.gltfLoader = new GLTFLoader();
-    this.gltfLoader.setDRACOLoader(this.dracoLoader);
+    this.dracoLoader = null;
+    this.gltfExporter = null;
+  }
 
-    this.gltfExporter = new GLTFExporter();
+  async ensureModelViewerAndExporterLoaded() {
+    if (typeof window !== 'undefined' && window.customElements && !window.customElements.get('model-viewer')) {
+      await new Promise((resolve) => {
+        const existingScript = document.querySelector('script[data-model-viewer-lazy]');
+        if (existingScript) {
+          existingScript.addEventListener('load', resolve, { once: true });
+          existingScript.addEventListener('error', resolve, { once: true });
+          return;
+        }
+        const script = document.createElement('script');
+        script.type = 'module';
+        script.dataset.modelViewerLazy = 'true';
+        script.src = 'https://ajax.googleapis.com/ajax/libs/model-viewer/3.5.0/model-viewer.min.js';
+        script.onload = () => resolve();
+        script.onerror = () => resolve();
+        document.head.appendChild(script);
+      });
+    }
+    if (!this.gltfExporter) {
+      try {
+        const mod = await import('three/addons/exporters/GLTFExporter.js');
+        if (mod && mod.GLTFExporter) {
+          this.gltfExporter = new mod.GLTFExporter();
+        }
+      } catch (_) {}
+    }
   }
 
   /**
@@ -678,7 +712,8 @@ export class Menu3DApp {
 
   /**
    * Selecciona un plato por ID, inicializa sus variantes por defecto, actualiza la UI,
-   * calcula su escala final mientras `visible = false` y lo muestra sin fotograma gigante.
+   * muestra el plato 3D en el primer frame (< 15ms) sin bloquear la interfaz con el loader,
+   * y aplica el modelo .glb desde caché o en segundo plano manteniendo escala 1:1 y rotación.
    */
   async selectDish(dishId) {
     const dish = this.dishes.find((item) => item.id === dishId);
@@ -694,22 +729,20 @@ export class Menu3DApp {
       this.transitionCameraTo(dish.cameraConfig);
     }
 
-    this.setLoading(true, `Preparando ${dish.nombre}...`);
+    if (!this.scene || !this.renderer) {
+      this.setLoading(false);
+      return;
+    }
+
     this.disposeDimensionsGuide();
     this.disposeCurrentModel();
 
-    try {
-      const { modelGroup, cameFromGLB } = await this.loadGLBOrFallback(dish);
-
-      if (requestId !== this.loadRequestId) {
-        this.disposeObjectResources(modelGroup);
-        return;
-      }
-
-      // Mantener oculto mientras se calcula su Box3 y escala final para eliminar cualquier salto gigante
+    const mountModelGroup = (modelGroup, cameFromGLB, preserveRotY = 0) => {
+      this.disposeCurrentModel();
       modelGroup.visible = false;
       modelGroup.userData.isDishModel = true;
       this.getOrComputeIntrinsicMetrics(modelGroup);
+      modelGroup.rotation.y = preserveRotY;
 
       this.currentModel = modelGroup;
       this.currentModelCameFromGLB = cameFromGLB;
@@ -721,23 +754,75 @@ export class Menu3DApp {
         this.applyStudioNormalizedScale(dish);
       }
 
-      // Actualizar guía 3D de dimensiones y control AR si están activos
       this.updateDimensionsGuide(dish);
       this.updateARCalibratorUI(dish);
       this.syncRendererViewportAndClear();
       this.setLoading(false);
+    };
 
-      // Preparar modelo GLB en segundo plano sin bloquear la UI ni congelar el hilo principal
-      setTimeout(() => {
-        if (requestId === this.loadRequestId && this.currentModel === modelGroup) {
-          this.prepareARModelSource(dish, modelGroup, cameFromGLB).catch(() => {});
-        }
-      }, 80);
-    } finally {
-      if (requestId === this.loadRequestId) {
-        this.setLoading(false);
-      }
+    // 1. Si el .glb ya está en caché en memoria, montarlo en 0ms sin spinner
+    const cacheKey = dish.ruta_modelo_glb || '';
+    if (cacheKey && this.glbCache.has(cacheKey)) {
+      const cached = this.glbCache.get(cacheKey);
+      const cloneGroup = cached.sceneTemplate.clone(true);
+      cloneGroup.userData.intrinsicMetrics = { ...cached.intrinsicMetrics };
+      mountModelGroup(cloneGroup, true, 0);
+      return;
     }
+
+    // 2. Renderizado Inmediato (< 15ms): montar el modelo procedural estilizado en el primer frame
+    // y quitar el overlay de carga de inmediato para que la escena 3D y todos los botones respondan al instante
+    const instantPreview = this.createProceduralDish(dish);
+    mountModelGroup(instantPreview, false, 0);
+
+    // 3. Si el plato tiene un .glb configurado, cargarlo en segundo plano y reemplazar suavemente al llegar
+    if (cacheKey) {
+      const { modelGroup, cameFromGLB } = await this.loadGLBOrFallback(dish);
+      if (requestId !== this.loadRequestId) {
+        this.disposeObjectResources(modelGroup);
+        return;
+      }
+      if (cameFromGLB && modelGroup) {
+        const currentRotY = this.currentModel ? this.currentModel.rotation.y : 0;
+        mountModelGroup(modelGroup, true, currentRotY);
+      }
+      this.prefetchRemainingModels();
+    }
+  }
+
+  /**
+   * Precarga silenciosamente en segundo plano los modelos .glb restantes de la carta
+   * para que el cambio entre platos del carrusel sea instantáneo (0ms).
+   */
+  prefetchRemainingModels() {
+    if (this._isPrefetchingModels || !this.gltfLoader || !Array.isArray(this.dishes)) return;
+    this._isPrefetchingModels = true;
+
+    const pendingDishes = this.dishes.filter(
+      (d) => d && d.ruta_modelo_glb && !this.glbCache.has(d.ruta_modelo_glb)
+    );
+
+    const next = (idx) => {
+      if (idx >= pendingDishes.length) {
+        this._isPrefetchingModels = false;
+        return;
+      }
+      const d = pendingDishes[idx];
+      if (this.glbCache.has(d.ruta_modelo_glb)) {
+        next(idx + 1);
+        return;
+      }
+      this.loadGLBOrFallback(d)
+        .then(({ modelGroup }) => {
+          if (modelGroup) this.disposeObjectResources(modelGroup);
+        })
+        .catch(() => {})
+        .finally(() => {
+          setTimeout(() => next(idx + 1), 120);
+        });
+    };
+
+    setTimeout(() => next(0), 250);
   }
 
   /**
@@ -1261,7 +1346,7 @@ export class Menu3DApp {
    */
   loadGLBOrFallback(dish) {
     return new Promise((resolve) => {
-      if (!dish.ruta_modelo_glb) {
+      if (!dish.ruta_modelo_glb || !this.gltfLoader) {
         const proc = this.createProceduralDish(dish);
         proc.visible = false;
         this.getOrComputeIntrinsicMetrics(proc);
@@ -1269,9 +1354,33 @@ export class Menu3DApp {
         return;
       }
 
+      const cacheKey = dish.ruta_modelo_glb;
+      if (this.glbCache.has(cacheKey)) {
+        const cached = this.glbCache.get(cacheKey);
+        const clone = cached.sceneTemplate.clone(true);
+        clone.visible = false;
+        clone.userData.intrinsicMetrics = { ...cached.intrinsicMetrics };
+        resolve({ modelGroup: clone, cameFromGLB: true });
+        return;
+      }
+
+      let settled = false;
+      const fallbackTimer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        const proceduralModel = this.createProceduralDish(dish);
+        proceduralModel.visible = false;
+        this.getOrComputeIntrinsicMetrics(proceduralModel);
+        resolve({ modelGroup: proceduralModel, cameFromGLB: false });
+      }, 3800);
+
       this.gltfLoader.load(
-        dish.ruta_modelo_glb,
+        cacheKey,
         (gltf) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(fallbackTimer);
+
           const root = gltf.scene;
           root.visible = false;
           root.scale.setScalar(1);
@@ -1280,6 +1389,13 @@ export class Menu3DApp {
           root.updateMatrixWorld(true);
 
           const metrics = this.getOrComputeIntrinsicMetrics(root);
+
+          // Guardar plantilla en caché en memoria para cambios instantáneos (0ms) en el carrusel
+          const templateClone = root.clone(true);
+          this.glbCache.set(cacheKey, {
+            sceneTemplate: templateClone,
+            intrinsicMetrics: { ...metrics }
+          });
 
           // Si el .glb proviene de un escaneo LiDAR en metros reales (0.08 m a 0.65 m)
           // y el plato no tenía dimensiones explícitas, sincronizar sus centímetros reales
@@ -1301,6 +1417,10 @@ export class Menu3DApp {
         },
         undefined,
         () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(fallbackTimer);
+
           const proceduralModel = this.createProceduralDish(dish);
           proceduralModel.visible = false;
           this.getOrComputeIntrinsicMetrics(proceduralModel);
@@ -1312,9 +1432,10 @@ export class Menu3DApp {
 
   /**
    * Genera o asigna el archivo .glb en escala física 1:1 (metros reales, 1 unidad = 1 metro)
-   * para el componente <model-viewer ar ar-scale="fixed">.
+   * para el componente <model-viewer ar ar-scale="fixed"> bajo demanda.
    */
   async prepareARModelSource(dish, modelGroup, cameFromGLB) {
+    await this.ensureModelViewerAndExporterLoaded();
     const modelViewer = document.getElementById('ar-model-viewer');
     if (!modelViewer) return;
 
@@ -1332,6 +1453,8 @@ export class Menu3DApp {
       modelViewer.scale = `${exactMetricFactor} ${exactMetricFactor} ${exactMetricFactor}`;
       return;
     }
+
+    if (!this.gltfExporter) return;
 
     modelViewer.scale = '1 1 1';
     const arClone = modelGroup.clone(true);
@@ -2726,11 +2849,17 @@ export class Menu3DApp {
       orderModal.classList.add('hidden');
     };
 
-    // Evitar que WebXR DOM Overlay intercepte toques sobre las barras de botones superiores e inferiores
+    // Evitar que WebXR DOM Overlay u OrbitControls del canvas 3D intercepten toques sobre las barras HUD
     document.querySelectorAll('.top-bar, .viewer-bottom-bar').forEach((hudEl) => {
       hudEl.addEventListener('beforexrselect', (e) => {
         e.preventDefault();
       });
+      hudEl.addEventListener('pointerdown', (e) => {
+        e.stopPropagation();
+      });
+      hudEl.addEventListener('touchstart', (e) => {
+        e.stopPropagation();
+      }, { passive: true });
     });
 
     // Botón rápido para crear nueva Cuenta / Familia en la mesa
@@ -3008,6 +3137,14 @@ export class Menu3DApp {
   }
 }
 
-window.addEventListener('DOMContentLoaded', () => {
-  window.menu3DApp = new Menu3DApp();
-});
+const bootMenu3DApp = () => {
+  if (!window.menu3DApp) {
+    window.menu3DApp = new Menu3DApp();
+  }
+};
+
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', bootMenu3DApp, { once: true });
+} else {
+  bootMenu3DApp();
+}

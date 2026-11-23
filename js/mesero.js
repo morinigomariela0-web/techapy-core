@@ -1245,6 +1245,14 @@ class WaiterPanelApp {
   }
 }
 
-window.addEventListener('DOMContentLoaded', () => {
-  window.waiterPanelApp = new WaiterPanelApp();
-});
+const bootWaiterPanelApp = () => {
+  if (!window.waiterPanelApp) {
+    window.waiterPanelApp = new WaiterPanelApp();
+  }
+};
+
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', bootWaiterPanelApp, { once: true });
+} else {
+  bootWaiterPanelApp();
+}

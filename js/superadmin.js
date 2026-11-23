@@ -660,6 +660,14 @@ class SuperAdminController {
   }
 }
 
-window.addEventListener('DOMContentLoaded', () => {
-  window.superAdminController = new SuperAdminController();
-});
+const bootSuperAdmin = () => {
+  if (!window.superAdminController) {
+    window.superAdminController = new SuperAdminController();
+  }
+};
+
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', bootSuperAdmin, { once: true });
+} else {
+  bootSuperAdmin();
+}

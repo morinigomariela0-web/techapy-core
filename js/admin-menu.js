@@ -152,8 +152,12 @@ class AdminMenuManager {
         </a>
       `;
 
-      const container = document.querySelector('.admin-container');
-      const header = document.querySelector('.admin-header');
+      const container =
+        document.querySelector('.admin-menu-layout') ||
+        document.querySelector('.admin-container');
+      const header =
+        document.querySelector('.admin-topbar') ||
+        document.querySelector('.admin-header');
       if (container && header && header.nextSibling) {
         container.insertBefore(banner, header.nextSibling);
       } else if (container) {
@@ -789,6 +793,14 @@ class AdminMenuManager {
   }
 }
 
-window.addEventListener('DOMContentLoaded', () => {
-  window.adminMenuManager = new AdminMenuManager();
-});
+const bootAdminMenu = () => {
+  if (!window.adminMenuManager) {
+    window.adminMenuManager = new AdminMenuManager();
+  }
+};
+
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', bootAdminMenu, { once: true });
+} else {
+  bootAdminMenu();
+}

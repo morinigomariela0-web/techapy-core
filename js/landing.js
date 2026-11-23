@@ -50,15 +50,22 @@ class TechaPYLandingApp {
 
     this.currentModel = null;
     this.cotaRing = null;
+    this.demoGlbCache = new Map();
     this.clock = new THREE.Clock();
 
-    if (this.viewport) {
-      this.initEmbedded3DViewer();
-      this.loadDemoModel('ramen');
-    }
-
+    // 1. Vincular todos los botones, formulario WhatsApp y modal Iniciar Sesión antes del visor 3D
     this.bindUIEvents();
     this.bindLoginModalEvents();
+
+    // 2. Inicializar visor 3D embebido de forma resiliente con preview instantáneo
+    if (this.viewport) {
+      try {
+        this.initEmbedded3DViewer();
+        this.loadDemoModel('ramen');
+      } catch (err) {
+        console.warn('[Landing 3D] Visor WebGL en modo ligero:', err);
+      }
+    }
   }
 
   /**
@@ -141,11 +148,32 @@ class TechaPYLandingApp {
     this.animate();
   }
 
+  createQuickProceduralPreview(key) {
+    const group = new THREE.Group();
+    const plate = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.95, 0.76, 0.12, 36),
+      new THREE.MeshStandardMaterial({ color: 0x1c212b, roughness: 0.25, metalness: 0.1 })
+    );
+    plate.position.y = 0.06;
+    group.add(plate);
+
+    const foodColor = key === 'ramen' ? 0xd4af37 : key === 'burger' ? 0xc5a059 : 0xe8998d;
+    const food = new THREE.Mesh(
+      new THREE.SphereGeometry(0.42, 24, 18),
+      new THREE.MeshStandardMaterial({ color: foodColor, roughness: 0.35 })
+    );
+    food.scale.set(1, 0.65, 1);
+    food.position.y = 0.28;
+    group.add(food);
+    return group;
+  }
+
   loadDemoModel(key) {
     const item = this.demoCatalog[key] || this.demoCatalog.ramen;
     if (this.dimsTag) {
       this.dimsTag.textContent = item.dims;
     }
+    if (!this.scene) return;
 
     if (this.currentModel) {
       this.scene.remove(this.currentModel);
@@ -153,6 +181,18 @@ class TechaPYLandingApp {
     }
 
     this.updateCotaRing(item.radius);
+
+    if (this.demoGlbCache.has(item.url)) {
+      const cachedClone = this.demoGlbCache.get(item.url).clone(true);
+      this.currentModel = cachedClone;
+      this.scene.add(cachedClone);
+      return;
+    }
+
+    // Mostrar preview procedural inmediato en el primer frame mientras descarga el .glb
+    const preview = this.createQuickProceduralPreview(key);
+    this.currentModel = preview;
+    this.scene.add(preview);
 
     this.gltfLoader.load(
       item.url,
@@ -164,12 +204,16 @@ class TechaPYLandingApp {
         root.position.z -= center.z;
         root.position.y -= box.min.y;
         root.scale.setScalar(item.scale);
+        this.demoGlbCache.set(item.url, root.clone(true));
+        if (this.currentModel) {
+          this.scene.remove(this.currentModel);
+        }
         this.currentModel = root;
         this.scene.add(root);
       },
       undefined,
       (err) => {
-        console.error('Error cargando modelo demo en landing:', err);
+        console.warn('Usando modelo procedural de respaldo en landing:', err);
       }
     );
   }
@@ -419,6 +463,14 @@ class TechaPYLandingApp {
   }
 }
 
-window.addEventListener('DOMContentLoaded', () => {
-  window.techaPYLandingApp = new TechaPYLandingApp();
-});
+const bootLandingApp = () => {
+  if (!window.techaPYLandingApp) {
+    window.techaPYLandingApp = new TechaPYLandingApp();
+  }
+};
+
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', bootLandingApp, { once: true });
+} else {
+  bootLandingApp();
+}

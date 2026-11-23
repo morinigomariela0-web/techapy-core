@@ -595,6 +595,14 @@ class AdminQRGenerator {
   }
 }
 
-window.addEventListener('DOMContentLoaded', () => {
-  window.adminQRGenerator = new AdminQRGenerator();
-});
+const bootAdminQR = () => {
+  if (!window.adminQRGenerator) {
+    window.adminQRGenerator = new AdminQRGenerator();
+  }
+};
+
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', bootAdminQR, { once: true });
+} else {
+  bootAdminQR();
+}
