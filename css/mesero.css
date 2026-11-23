@@ -492,6 +492,333 @@ body {
   padding: 0 6px;
 }
 
+.hidden {
+  display: none !important;
+}
+
+.history-count-badge {
+  background: var(--accent-pos);
+  color: #0e1013;
+  font-size: 0.68rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+/* Panel de Historial de Mesas y Conteo para Cierre de Caja */
+.tables-history-section {
+  background: var(--bg-card);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--border-gold);
+  border-radius: var(--radius-xl);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.58);
+}
+
+.history-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.history-panel-header h2 {
+  font-family: var(--font-display);
+  font-size: 1.18rem;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.history-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.history-stat-box {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.history-stat-box span {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.history-stat-box strong {
+  font-size: 1.14rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent-pending);
+}
+
+.tables-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.history-table-row {
+  background: rgba(14, 16, 19, 0.78);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 11px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.history-row-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.history-row-title {
+  font-weight: 700;
+  font-size: 0.92rem;
+  color: #ffffff;
+}
+
+.history-row-time {
+  font-size: 0.74rem;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.history-row-total {
+  font-size: 0.96rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #6ee7b7;
+}
+
+.history-row-subaccounts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.history-sub-pill {
+  font-size: 0.73rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  background: rgba(197, 160, 89, 0.12);
+  border: 1px solid rgba(197, 160, 89, 0.3);
+  color: var(--accent-pending);
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+
+.history-verified-tag {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #6ee7b7;
+  background: rgba(16, 185, 129, 0.14);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+
+/* Selector de Subcuenta / Familia dentro de cada ítem del mozo */
+.waiter-item-subaccount-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-left: 38px;
+}
+
+.waiter-item-subaccount-label {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.waiter-item-subaccount-select {
+  background: rgba(197, 160, 89, 0.14);
+  border: 1px solid rgba(197, 160, 89, 0.35);
+  color: var(--accent-pending);
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-family: var(--font-sans);
+  font-size: 0.74rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.waiter-item-subaccount-select option {
+  background: #15181e;
+  color: var(--text-light);
+}
+
+/* Caja de Cuentas Divididas por Familia en Tarjeta del Mozo */
+.comanda-split-box {
+  background: rgba(197, 160, 89, 0.06);
+  border: 1px solid rgba(197, 160, 89, 0.26);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.comanda-split-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 0.71rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent-pos);
+}
+
+.comanda-split-add-btn {
+  background: rgba(197, 160, 89, 0.16);
+  border: 1px solid rgba(197, 160, 89, 0.38);
+  color: var(--accent-pending);
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-family: var(--font-sans);
+  font-size: 0.69rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.comanda-split-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.84rem;
+  font-weight: 600;
+  padding: 4px 0;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.08);
+}
+
+.comanda-split-row:last-child {
+  border-bottom: none;
+}
+
+.comanda-split-row strong {
+  color: var(--accent-pending);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Caja de Verificación de Totales Antes de Cobrar (Corroboración Caja / Mozo) */
+.comanda-verify-box {
+  background: rgba(14, 16, 19, 0.75);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 11px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.comanda-verify-box.verified {
+  border-color: rgba(16, 185, 129, 0.48);
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.verify-box-title {
+  font-size: 0.71rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+}
+
+.verify-input-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.verify-amount-input {
+  flex: 1 1 130px;
+  background: #0d0f13;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 7px 10px;
+  color: var(--text-light);
+  font-family: var(--font-sans);
+  font-size: 0.86rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.verify-equal-btn {
+  background: rgba(197, 160, 89, 0.16);
+  border: 1px solid rgba(197, 160, 89, 0.36);
+  color: var(--accent-pending);
+  padding: 7px 10px;
+  border-radius: 8px;
+  font-family: var(--font-sans);
+  font-size: 0.74rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.verify-diff-badge {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 5px 9px;
+  border-radius: 7px;
+  font-variant-numeric: tabular-nums;
+}
+
+.verify-diff-badge.match {
+  background: rgba(16, 185, 129, 0.15);
+  border: 1px solid rgba(16, 185, 129, 0.38);
+  color: #6ee7b7;
+}
+
+.verify-diff-badge.mismatch {
+  background: rgba(245, 158, 11, 0.14);
+  border: 1px solid rgba(245, 158, 11, 0.38);
+  color: #fcd34d;
+}
+
+.verify-checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-light);
+  cursor: pointer;
+}
+
+.verify-checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #10b981;
+  cursor: pointer;
+}
+
 .comanda-total-row {
   display: flex;
   justify-content: space-between;

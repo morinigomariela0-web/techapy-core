@@ -156,6 +156,35 @@ try {
   fs.mkdirSync(LOGS_DIR, { recursive: true });
 } catch (_) {}
 
+const AUDIT_LOG_PATH = path.join(LOGS_DIR, 'techapy-audit.log');
+const REDACTED_AUDIT_KEYS = new Set([
+  'pin',
+  'adminpin',
+  'waiterpin',
+  'pinacceso',
+  'password',
+  'secret',
+  'token',
+  'key',
+  'authorization',
+  'cookie'
+]);
+
+function sanitizeAuditPayload(obj) {
+  if (!obj || typeof obj !== 'object') return obj;
+  const clean = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (REDACTED_AUDIT_KEYS.has(String(k).toLowerCase())) {
+      clean[k] = '[REDACTED]';
+    } else if (v && typeof v === 'object' && !Array.isArray(v)) {
+      clean[k] = sanitizeAuditPayload(v);
+    } else {
+      clean[k] = v;
+    }
+  }
+  return clean;
+}
+
 /**
  * Logger de producción: escribe en consola y persiste en logs/techapy-prod.log
  */
@@ -174,14 +203,30 @@ function logProdEvent(level, message, extra = '') {
 }
 
 /**
+ * Registro de auditoría de seguridad (sin exponer PINs, tokens ni secretos).
+ */
+function logAuditEvent(action, details = {}) {
+  const safeDetails = sanitizeAuditPayload(details);
+  const record = {
+    ts: new Date().toISOString(),
+    action: String(action || 'SECURITY_EVENT'),
+    ...safeDetails
+  };
+  logProdEvent('AUDIT', `[${record.action}]`, safeDetails);
+  try {
+    fs.appendFileSync(AUDIT_LOG_PATH, JSON.stringify(record) + '\n', 'utf8');
+  } catch (_) {}
+}
+
+/**
  * Manejadores globales de errores para evitar que un mensaje WebSocket malformado
- * o excepción asíncrona tumbe el proceso en producción.
+ * o excepción asíncrona tumbe el proceso en producción (sin filtrar stack traces al cliente).
  */
 process.on('uncaughtException', (err) => {
   logProdEvent(
     'ERROR',
     'uncaughtException interceptada (proceso mantenido activo)',
-    err && err.stack ? err.stack : String(err)
+    err && err.message ? err.message : 'Error interno no capturado'
   );
 });
 
@@ -189,30 +234,300 @@ process.on('unhandledRejection', (reason) => {
   logProdEvent(
     'ERROR',
     'unhandledRejection interceptada (proceso mantenido activo)',
-    reason && reason.stack ? reason.stack : String(reason)
+    reason && reason.message ? reason.message : String(reason)
   );
 });
 
 /**
- * Escritura atómica en disco mediante archivo temporal (.tmp + renameSync)
- * para evitar corrupción de menu-data.json o config.json ante cortes o errores.
+ * Persistencia atómica centralizada de archivos JSON con bloqueo/cola por archivo,
+ * escritura temporal, fsync y renombrado atómico (POSIX rename) para evitar corrupción ante concurrencia.
  */
+const activeFileLocks = new Set();
+const fileWriteChains = new Map();
+
 function writeJsonAtomically(filePath, jsonContent) {
-  const parsedCheck = JSON.parse(jsonContent);
+  const resolvedPath = path.resolve(filePath);
+  const parsedCheck =
+    typeof jsonContent === 'string' ? JSON.parse(jsonContent) : jsonContent;
   if (!parsedCheck || typeof parsedCheck !== 'object') {
     throw new Error('Contenido JSON inválido antes de escritura en disco');
   }
-  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmpPath, jsonContent, 'utf8');
-  fs.renameSync(tmpPath, filePath);
+  const serialized =
+    typeof jsonContent === 'string'
+      ? jsonContent
+      : JSON.stringify(parsedCheck, null, 2) + '\n';
+
+  fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
+  const randSuffix = crypto.randomBytes(4).toString('hex');
+  const tmpPath = `${resolvedPath}.${process.pid}.${Date.now()}.${randSuffix}.tmp`;
+
+  activeFileLocks.add(resolvedPath);
+  let fd = null;
+  try {
+    fd = fs.openSync(tmpPath, 'w', 0o600);
+    fs.writeFileSync(fd, serialized, 'utf8');
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = null;
+    fs.renameSync(tmpPath, resolvedPath);
+  } catch (err) {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch (_) {}
+    }
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch (_) {}
+    throw err;
+  } finally {
+    activeFileLocks.delete(resolvedPath);
+  }
+}
+
+function enqueueAtomicJsonWrite(filePath, jsonContent) {
+  const resolvedPath = path.resolve(filePath);
+  const prev = fileWriteChains.get(resolvedPath) || Promise.resolve();
+  const next = prev
+    .catch(() => {})
+    .then(() => {
+      writeJsonAtomically(resolvedPath, jsonContent);
+    })
+    .finally(() => {
+      if (fileWriteChains.get(resolvedPath) === next) {
+        fileWriteChains.delete(resolvedPath);
+      }
+    });
+  fileWriteChains.set(resolvedPath, next);
+  return next;
+}
+
+const SLUG_REGEX = /^[a-z0-9-]{1,36}$/;
+const SAFE_FILENAME_REGEX = /^[a-zA-Z0-9._-]{1,96}$/;
+
+function isValidTenantSlug(raw) {
+  const s = String(raw || '').trim().toLowerCase();
+  return SLUG_REGEX.test(s) && !s.includes('..');
+}
+
+function isValidSafeFilename(raw) {
+  const s = String(raw || '').trim();
+  return SAFE_FILENAME_REGEX.test(s) && !s.includes('..') && !s.startsWith('.');
 }
 
 function sanitizeTenantId(raw) {
   const clean = String(raw || DEFAULT_TENANT)
     .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9_-]/g, '');
-  return clean || DEFAULT_TENANT;
+    .replace(/[^a-z0-9-]/g, '')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 36);
+  return clean && SLUG_REGEX.test(clean) ? clean : DEFAULT_TENANT;
+}
+
+/**
+ * Obtiene la IP real del cliente respetando X-Forwarded-For (trust proxy en Render / Cloud).
+ */
+function getClientIp(req) {
+  if (!req) return '0.0.0.0';
+  const xff = req.headers && req.headers['x-forwarded-for'];
+  if (xff) {
+    const firstIp = String(xff).split(',')[0].trim();
+    if (firstIp) return firstIp.replace(/^::ffff:/, '').slice(0, 64);
+  }
+  const rawAddr =
+    (req.socket && req.socket.remoteAddress) ||
+    (req.connection && req.connection.remoteAddress) ||
+    '0.0.0.0';
+  return String(rawAddr).replace(/^::ffff:/, '').slice(0, 64);
+}
+
+/**
+ * Detecta si la petición llega sobre HTTPS directo o detrás de un proxy TLS (Render).
+ */
+function isSecureRequest(req) {
+  if (!req) return false;
+  if (req.socket && req.socket.encrypted) return true;
+  const proto = String((req.headers && req.headers['x-forwarded-proto']) || '')
+    .split(',')[0]
+    .trim()
+    .toLowerCase();
+  return proto === 'https';
+}
+
+/**
+ * Genera cabecera Set-Cookie con HttpOnly, SameSite=Lax y Secure automático en HTTPS.
+ */
+function buildAuthCookieHeader(req, cookieName, tokenValue, maxAgeSec = 43200) {
+  const secureFlag = isSecureRequest(req) ? '; Secure' : '';
+  return `${cookieName}=${tokenValue}; HttpOnly; Path=/; Max-Age=${maxAgeSec}; SameSite=Lax${secureFlag}`;
+}
+
+// ============================================================================
+// FIREWALL DE APLICACIÓN (WAF), RATE LIMITING Y BLOQUEO ANTI-FUERZA BRUTA
+// ============================================================================
+const authBruteForceStore = new Map(); // ip -> { fails, firstFailAt, blockedUntil }
+const rateLimitBuckets = new Map(); // `${bucket}:${ip}` -> { count, windowStart }
+
+const AUTH_MAX_FAILS = 6;
+const AUTH_FAIL_WINDOW_MS = 10 * 60 * 1000; // 10 minutos
+const AUTH_LOCKOUT_MS = 12 * 60 * 1000; // 12 minutos de bloqueo tras superar intentos fallidos
+
+// Limpieza periódica de memoria de los contadores de rate limit y bloqueo
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, rec] of authBruteForceStore.entries()) {
+    if (rec.blockedUntil <= now && now - rec.firstFailAt > AUTH_FAIL_WINDOW_MS) {
+      authBruteForceStore.delete(ip);
+    }
+  }
+  for (const [key, bucket] of rateLimitBuckets.entries()) {
+    if (now - bucket.windowStart > 15 * 60 * 1000) {
+      rateLimitBuckets.delete(key);
+    }
+  }
+}, 5 * 60 * 1000).unref();
+
+function checkAuthLockout(ip) {
+  const now = Date.now();
+  const rec = authBruteForceStore.get(ip);
+  if (!rec) return { blocked: false, retryAfterSec: 0 };
+  if (rec.blockedUntil && rec.blockedUntil > now) {
+    return {
+      blocked: true,
+      retryAfterSec: Math.max(1, Math.ceil((rec.blockedUntil - now) / 1000))
+    };
+  }
+  if (now - rec.firstFailAt > AUTH_FAIL_WINDOW_MS) {
+    authBruteForceStore.delete(ip);
+  }
+  return { blocked: false, retryAfterSec: 0 };
+}
+
+function recordAuthFailure(ip, contextInfo = '') {
+  const now = Date.now();
+  let rec = authBruteForceStore.get(ip);
+  if (!rec || now - rec.firstFailAt > AUTH_FAIL_WINDOW_MS) {
+    rec = { fails: 1, firstFailAt: now, blockedUntil: 0 };
+  } else {
+    rec.fails += 1;
+  }
+
+  if (rec.fails >= AUTH_MAX_FAILS) {
+    rec.blockedUntil = now + AUTH_LOCKOUT_MS;
+    logAuditEvent('AUTH_LOCKOUT', {
+      ip,
+      fails: rec.fails,
+      lockoutMinutes: Math.round(AUTH_LOCKOUT_MS / 60000),
+      context: contextInfo
+    });
+  }
+  authBruteForceStore.set(ip, rec);
+  return rec;
+}
+
+function resetAuthFailures(ip) {
+  authBruteForceStore.delete(ip);
+}
+
+/**
+ * Verifica límite de peticiones por IP y ventana de tiempo.
+ */
+function checkRateLimit(ip, bucketName, maxRequests, windowMs) {
+  const now = Date.now();
+  const key = `${bucketName}:${ip}`;
+  let entry = rateLimitBuckets.get(key);
+  if (!entry || now - entry.windowStart >= windowMs) {
+    entry = { count: 1, windowStart: now };
+    rateLimitBuckets.set(key, entry);
+    return { allowed: true, remaining: maxRequests - 1, retryAfterSec: 0 };
+  }
+  entry.count += 1;
+  if (entry.count > maxRequests) {
+    const retryAfterSec = Math.max(1, Math.ceil((entry.windowStart + windowMs - now) / 1000));
+    return { allowed: false, remaining: 0, retryAfterSec };
+  }
+  return { allowed: true, remaining: maxRequests - entry.count, retryAfterSec: 0 };
+}
+
+/**
+ * Firewall de rutas sensibles, archivos ocultos y secuencias de Path Traversal.
+ */
+function isBlockedSensitivePath(pathname, rawUrl = '') {
+  const rawLower = String(rawUrl || '').toLowerCase();
+  const pathLower = String(pathname || '').toLowerCase();
+
+  // Bloquear secuencias de Path Traversal o null bytes
+  if (
+    rawLower.includes('..') ||
+    rawLower.includes('%2e%2e') ||
+    rawLower.includes('%00') ||
+    pathLower.includes('..') ||
+    pathLower.includes('\0') ||
+    pathLower.includes('\\')
+  ) {
+    return true;
+  }
+
+  // Bloquear cualquier archivo o directorio oculto (/.env, /.git, /.DS_Store, etc.)
+  if (/(?:^|\/)\.[^/]+/.test(pathLower)) {
+    return true;
+  }
+
+  // Bloquear archivos internos del servidor, código backend, backups, logs y scripts shell
+  const blockedPatterns = [
+    /^\/server\.js$/i,
+    /^\/vite\.config\.js$/i,
+    /^\/package(?:-lock)?\.json$/i,
+    /^\/[a-z0-9_-]+\.sh$/i,
+    /^\/scripts(?:\/|$)/i,
+    /^\/logs(?:\/|$)/i,
+    /^\/node_modules(?:\/|$)/i,
+    /^\/data\/tunnel-info\.json$/i,
+    /^\/data\/tenants\/[^/]+\/config\.json$/i,
+    /\.backup\.json$/i,
+    /\.tmp$/i,
+    /\.log$/i,
+    /\.env(?:\..+)?$/i
+  ];
+
+  return blockedPatterns.some((rx) => rx.test(pathLower));
+}
+
+/**
+ * Aplica cabeceras HTTP de seguridad recomendadas (OWASP) compatibles con Three.js, WebGL,
+ * @google/model-viewer, Google Fonts, cámara AR (camera=(self)) y WebSockets.
+ */
+function applySecurityHeaders(req, res) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  res.setHeader('X-XSS-Protection', '0');
+  res.setHeader(
+    'Permissions-Policy',
+    'camera=(self), microphone=(), geolocation=(), payment=(), usb=(), xr-spatial-tracking=(self)'
+  );
+  res.setHeader(
+    'Content-Security-Policy',
+    [
+      "default-src 'self' blob: data:",
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://cdn.jsdelivr.net https://ajax.googleapis.com",
+      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+      "font-src 'self' data: https://fonts.gstatic.com",
+      "img-src 'self' data: blob: https:",
+      "media-src 'self' blob: mediastream:",
+      "connect-src 'self' ws: wss: blob: data: https://cdn.jsdelivr.net https://ajax.googleapis.com https://fonts.googleapis.com https://fonts.gstatic.com",
+      "worker-src 'self' blob: https://cdn.jsdelivr.net",
+      "frame-ancestors 'self'",
+      "base-uri 'self'",
+      "object-src 'none'"
+    ].join('; ')
+  );
+  if (isSecureRequest(req)) {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
 }
 
 function getTenantPaths(rawTenant) {
@@ -253,7 +568,7 @@ function getTenantPaths(rawTenant) {
         pinAcceso: '1234'
       }
     };
-    fs.writeFileSync(configPath, JSON.stringify(defaultCfg, null, 2) + '\n', 'utf8');
+    writeJsonAtomically(configPath, JSON.stringify(defaultCfg, null, 2) + '\n');
   }
 
   return { tenant, dataDir, menuPath, backupPath, configPath, modelsDir };
@@ -278,11 +593,69 @@ function getTenantSecurityConfig(rawTenant) {
   return { tenant, nombre, adminPin, waiterPin, rawConfig: cfg };
 }
 
+/**
+ * Verifica si el tenant existe y se encuentra en estado operativo ("Activo").
+ * Impide que un tenant "pendiente" o "Suspendido" reciba comandas o acciones operativas.
+ */
+function getTenantOperationalState(rawTenant) {
+  const slug = sanitizeTenantId(rawTenant);
+  const cfgPath = path.join(TENANTS_DATA_DIR, slug, 'config.json');
+  if (!fs.existsSync(cfgPath) && slug !== DEFAULT_TENANT) {
+    return { exists: false, operational: false, estado: 'inexistente', tenant: slug, nombre: slug };
+  }
+  const { tenant, nombre, rawConfig } = getTenantSecurityConfig(slug);
+  const estado = normalizeTenantEstado(rawConfig && rawConfig.estado);
+  return {
+    exists: true,
+    operational: estado === 'Activo',
+    estado,
+    tenant,
+    nombre
+  };
+}
+
+/**
+ * Carga un mapa indexado por id de plato (y nombre en minúsculas) del menú real del tenant
+ * para validar precios unitarios y subtotales en el backend.
+ */
+function loadTenantMenuDishMap(rawTenant) {
+  const slug = sanitizeTenantId(rawTenant);
+  const menuPath = path.join(TENANTS_DATA_DIR, slug, 'menu-data.json');
+  const dishById = new Map();
+  const dishByName = new Map();
+  try {
+    const fallbackPath = fs.existsSync(menuPath) ? menuPath : MENU_FILE_PATH;
+    if (fs.existsSync(fallbackPath)) {
+      const parsed = JSON.parse(fs.readFileSync(fallbackPath, 'utf8'));
+      if (parsed && Array.isArray(parsed.platos)) {
+        for (const p of parsed.platos) {
+          if (p && p.id && typeof p.precio === 'number' && Number.isFinite(p.precio)) {
+            dishById.set(String(p.id).trim(), p);
+            if (p.nombre) {
+              dishByName.set(String(p.nombre).trim().toLowerCase(), p);
+            }
+          }
+        }
+      }
+    }
+  } catch (_) {}
+  return { dishById, dishByName };
+}
+
 function createRoleAuthToken(tenant, role, pin) {
   return crypto
     .createHmac('sha256', AUTH_SECRET)
     .update(`${tenant}:${role}:${pin}`)
     .digest('hex');
+}
+
+function safeSecretCompare(inputA, inputB) {
+  const strA = String(inputA || '');
+  const strB = String(inputB || '');
+  if (!strA || !strB) return false;
+  const hashA = crypto.createHash('sha256').update(strA).digest();
+  const hashB = crypto.createHash('sha256').update(strB).digest();
+  return crypto.timingSafeEqual(hashA, hashB);
 }
 
 function parseCookies(cookieHeader) {
@@ -294,7 +667,10 @@ function parseCookies(cookieHeader) {
       const idx = pair.indexOf('=');
       if (idx > 0) {
         const k = pair.slice(0, idx).trim();
-        const v = decodeURIComponent(pair.slice(idx + 1).trim());
+        let v = pair.slice(idx + 1).trim();
+        try {
+          v = decodeURIComponent(v);
+        } catch (_) {}
         map[k] = v;
       }
     });
@@ -309,6 +685,19 @@ function parseCookies(cookieHeader) {
  * Soporta Cookie firmada HttpOnly, Basic Auth / Bearer header, X-Superadmin-Key, X-Auth-Pin o query ?pin=.
  */
 function verifyRoleAuthentication(req, parsedUrl, rawTenant, requiredRole) {
+  const clientIp = getClientIp(req);
+  const lockout = checkAuthLockout(clientIp);
+  if (lockout.blocked) {
+    return {
+      authorized: false,
+      lockedOut: true,
+      retryAfterSec: lockout.retryAfterSec,
+      tenant: sanitizeTenantId(rawTenant),
+      nombre: 'Acceso Temporalmente Bloqueado',
+      requiredRole
+    };
+  }
+
   const isSuper = requiredRole === 'superadmin';
   const sec = isSuper
     ? {
@@ -334,8 +723,8 @@ function verifyRoleAuthentication(req, parsedUrl, rawTenant, requiredRole) {
   // 1. Verificar Cookie de sesión firmada (o cookie maestra de SuperAdmin que tiene acceso total)
   const cookies = parseCookies(req.headers.cookie);
   if (
-    (cookies[cookieName] && cookies[cookieName] === expectedToken) ||
-    (cookies[superCookieName] && cookies[superCookieName] === superToken)
+    (cookies[cookieName] && safeSecretCompare(cookies[cookieName], expectedToken)) ||
+    (cookies[superCookieName] && safeSecretCompare(cookies[superCookieName], superToken))
   ) {
     return { authorized: true, tenant, nombre, cookieHeader: null };
   }
@@ -347,16 +736,28 @@ function verifyRoleAuthentication(req, parsedUrl, rawTenant, requiredRole) {
       const decoded = Buffer.from(authHeader.slice(6).trim(), 'base64').toString('utf8');
       const colonIdx = decoded.indexOf(':');
       const providedPin = colonIdx !== -1 ? decoded.slice(colonIdx + 1).trim() : decoded.trim();
-      if (providedPin === expectedPin || providedPin === SUPERADMIN_MASTER_PIN) {
-        const setCookie = `${cookieName}=${expectedToken}; HttpOnly; Path=/; Max-Age=43200; SameSite=Lax`;
+      if (safeSecretCompare(providedPin, expectedPin) || safeSecretCompare(providedPin, SUPERADMIN_MASTER_PIN)) {
+        resetAuthFailures(clientIp);
+        const setCookie = buildAuthCookieHeader(req, cookieName, expectedToken);
         return { authorized: true, tenant, nombre, cookieHeader: setCookie };
+      }
+      if (providedPin) {
+        recordAuthFailure(clientIp, `BasicAuth ${requiredRole}@${tenant}`);
       }
     } catch (_) {}
   } else if (authHeader.toLowerCase().startsWith('bearer ')) {
     const bearerVal = authHeader.slice(7).trim();
-    if (bearerVal === expectedPin || bearerVal === expectedToken || bearerVal === SUPERADMIN_MASTER_PIN) {
-      const setCookie = `${cookieName}=${expectedToken}; HttpOnly; Path=/; Max-Age=43200; SameSite=Lax`;
+    if (
+      safeSecretCompare(bearerVal, expectedPin) ||
+      safeSecretCompare(bearerVal, expectedToken) ||
+      safeSecretCompare(bearerVal, SUPERADMIN_MASTER_PIN)
+    ) {
+      resetAuthFailures(clientIp);
+      const setCookie = buildAuthCookieHeader(req, cookieName, expectedToken);
       return { authorized: true, tenant, nombre, cookieHeader: setCookie };
+    }
+    if (bearerVal) {
+      recordAuthFailure(clientIp, `Bearer ${requiredRole}@${tenant}`);
     }
   }
 
@@ -367,15 +768,36 @@ function verifyRoleAuthentication(req, parsedUrl, rawTenant, requiredRole) {
       parsedUrl.searchParams.get('pin') ||
       ''
   ).trim();
-  if (
-    providedInlinePin &&
-    (providedInlinePin === expectedPin || providedInlinePin === SUPERADMIN_MASTER_PIN)
-  ) {
-    const setCookie = `${cookieName}=${expectedToken}; HttpOnly; Path=/; Max-Age=43200; SameSite=Lax`;
-    return { authorized: true, tenant, nombre, cookieHeader: setCookie };
+  if (providedInlinePin) {
+    if (
+      safeSecretCompare(providedInlinePin, expectedPin) ||
+      safeSecretCompare(providedInlinePin, SUPERADMIN_MASTER_PIN)
+    ) {
+      resetAuthFailures(clientIp);
+      const setCookie = buildAuthCookieHeader(req, cookieName, expectedToken);
+      return { authorized: true, tenant, nombre, cookieHeader: setCookie };
+    }
+    recordAuthFailure(clientIp, `InlinePin ${requiredRole}@${tenant}`);
   }
 
   return { authorized: false, tenant, nombre, requiredRole };
+}
+
+/**
+ * Verifica que la petición provenga de personal autenticado (waiter o admin) perteneciente
+ * específicamente al `tenant` consultado, o bien de `superadmin` global, bloqueando acceso cruzado entre tenants.
+ */
+function verifyTenantStaffAccess(req, parsedUrl, rawTenant) {
+  const tenant = sanitizeTenantId(rawTenant);
+  const waiterAuth = verifyRoleAuthentication(req, parsedUrl, tenant, 'waiter');
+  if (waiterAuth.authorized) return { authorized: true, role: 'waiter', tenant };
+  if (waiterAuth.lockedOut) return waiterAuth;
+
+  const adminAuth = verifyRoleAuthentication(req, parsedUrl, tenant, 'admin');
+  if (adminAuth.authorized) return { authorized: true, role: 'admin', tenant };
+  if (adminAuth.lockedOut) return adminAuth;
+
+  return { authorized: false, lockedOut: false, tenant };
 }
 
 /**
@@ -950,8 +1372,24 @@ const MIME_TYPES = {
 // Mapa de clientes WebSocket conectados: socket -> { role: 'cliente'|'mesero', sector, mesa, waiterId }
 const clients = new Map();
 
-// Lista en memoria de las órdenes activas del día
+// Lista en memoria de las órdenes activas del día e historial de mesas cobradas/cerradas del turno
 let activeOrders = [];
+let archivedHistoryOrders = [];
+
+function recordServerOrderHistory(order) {
+  if (!order || !order.id) return;
+  const idx = archivedHistoryOrders.findIndex((h) => h.id === order.id);
+  const copy = {
+    ...order,
+    cobradoAt: order.cobradoAt || new Date().toISOString()
+  };
+  if (idx !== -1) {
+    archivedHistoryOrders[idx] = copy;
+  } else {
+    archivedHistoryOrders.unshift(copy);
+    if (archivedHistoryOrders.length > 400) archivedHistoryOrders.pop();
+  }
+}
 
 /**
  * Detecta la dirección IPv4 local (LAN Wi-Fi / Ethernet) de la máquina.
@@ -1177,16 +1615,137 @@ function parseWsFrames(buffer) {
   };
 }
 
+function sanitizeOrderText(str, maxLen = 96) {
+  return String(str || '')
+    .replace(/[<>]/g, '')
+    .trim()
+    .slice(0, maxLen);
+}
+
+function validateAndSanitizeWsOrder(rawOrder, rawTenant = DEFAULT_TENANT) {
+  if (!rawOrder || typeof rawOrder !== 'object' || Array.isArray(rawOrder)) return null;
+  const id = sanitizeOrderText(rawOrder.id, 40);
+  if (!id) return null;
+
+  const tenant = sanitizeTenantId(rawTenant || rawOrder.tenant || DEFAULT_TENANT);
+  const { dishById, dishByName } = loadTenantMenuDishMap(tenant);
+
+  const rawItems = Array.isArray(rawOrder.items) ? rawOrder.items.slice(0, 100) : [];
+  const cleanItems = rawItems.map((it) => {
+    const itemId = sanitizeOrderText((it && it.id) || 'item', 48);
+    const nombreBase = sanitizeOrderText((it && it.nombreBase) || (it && it.nombre) || 'Plato', 96);
+    const catalogDish =
+      dishById.get(itemId) || dishByName.get(nombreBase.toLowerCase()) || null;
+
+    const qty = Math.min(200, Math.max(1, Math.round(Number(it && it.cantidad) || 1)));
+    let unitPrice = Math.min(
+      100000000,
+      Math.max(0, Number(it && it.precioUnitario) || 0)
+    );
+
+    // Si el plato existe en el menú real del tenant, impedir manipulación de precios por debajo del catálogo
+    if (catalogDish && typeof catalogDish.precio === 'number' && catalogDish.precio >= 0) {
+      const hasOptions =
+        (Array.isArray(it && it.opcionesDetalle) && it.opcionesDetalle.length > 0) ||
+        Boolean(it && it.resumenOpciones);
+      if (!hasOptions || unitPrice < catalogDish.precio) {
+        unitPrice = catalogDish.precio;
+      }
+    }
+
+    const subtotal = Math.min(200000000, Math.max(0, Math.round(unitPrice * qty)));
+    return {
+      id: itemId,
+      cartKey: sanitizeOrderText((it && it.cartKey) || '', 120),
+      subcuenta: sanitizeOrderText((it && it.subcuenta) || 'Cuenta 1 (Familia A)', 48),
+      nombreBase: catalogDish && catalogDish.nombre ? sanitizeOrderText(catalogDish.nombre, 96) : nombreBase,
+      nombre: sanitizeOrderText((it && it.nombre) || (catalogDish && catalogDish.nombre) || 'Plato', 140),
+      resumenOpciones: sanitizeOrderText((it && it.resumenOpciones) || '', 180),
+      opcionesDetalle: Array.isArray(it && it.opcionesDetalle)
+        ? it.opcionesDetalle.slice(0, 20).map((d) => ({
+            grupo: sanitizeOrderText(d && d.grupo, 48),
+            valor: sanitizeOrderText(d && d.valor, 96)
+          }))
+        : [],
+      precioUnitario: unitPrice,
+      cantidad: qty,
+      subtotal
+    };
+  });
+
+  // Recalcular autoritativamente en el backend el total general y los subtotales de cuentas divididas
+  const computedTotal = cleanItems.reduce((sum, item) => sum + (Number(item.subtotal) || 0), 0);
+  const isWaiterCall = String(rawOrder.tipo || '').toUpperCase() === 'LLAMADO_MESERO' && cleanItems.length === 0;
+  const total = isWaiterCall ? 0 : Math.min(500000000, Math.max(0, computedTotal));
+
+  const subAccountMap = new Map();
+  for (const item of cleanItems) {
+    const accName = item.subcuenta || 'Cuenta 1 (Familia A)';
+    const current = subAccountMap.get(accName) || {
+      nombre: accName,
+      itemsCount: 0,
+      subtotal: 0
+    };
+    current.itemsCount += Number(item.cantidad) || 1;
+    current.subtotal += Number(item.subtotal) || 0;
+    subAccountMap.set(accName, current);
+  }
+  const cuentasDivididas = Array.from(subAccountMap.values());
+
+  return {
+    ...rawOrder,
+    id,
+    tenant,
+    mesa: sanitizeOrderText(rawOrder.mesa || '1', 16),
+    sector: sanitizeOrderText(rawOrder.sector || 'Terraza', 40),
+    mesero_id: sanitizeOrderText(rawOrder.mesero_id || 'juan', 32).toLowerCase(),
+    items: cleanItems,
+    cuentasDivididas,
+    total
+  };
+}
+
 function handleWsMessage(socket, msg) {
   if (!msg || typeof msg !== 'object') return;
   const meta = clients.get(socket) || { role: 'unknown', tenant: DEFAULT_TENANT };
+
+  // Rate limit por socket WebSocket (máx 120 mensajes/minuto) para mitigar inundación sin afectar el salón
+  const now = Date.now();
+  if (!meta.wsWindowStart || now - meta.wsWindowStart > 60000) {
+    meta.wsWindowStart = now;
+    meta.wsMsgCount = 1;
+  } else {
+    meta.wsMsgCount = (meta.wsMsgCount || 0) + 1;
+    if (meta.wsMsgCount > 120) {
+      logProdEvent('WARN', `[WS Firewall] Límite de mensajes excedido por socket (${meta.role})`);
+      return;
+    }
+  }
+
   const type = msg.type || msg.eventType;
 
   if (type === 'REGISTER_WAITER') {
+    const requestedTenant = sanitizeTenantId(msg.tenant || meta.boundTenant || meta.tenant);
+    if (meta.boundTenant && meta.boundTenant !== requestedTenant) {
+      logProdEvent('WARN', `[WS Isolation] Intento de cambio cruzado de tenant bloqueado (${meta.boundTenant} -> ${requestedTenant})`);
+      return;
+    }
+    const opState = getTenantOperationalState(requestedTenant);
+    if (!opState.operational) {
+      sendWsJson(socket, {
+        type: 'TENANT_NOT_OPERATIONAL',
+        tenant: requestedTenant,
+        estado: opState.estado,
+        error: `El local "${opState.nombre}" se encuentra en estado "${opState.estado}".`
+      });
+      return;
+    }
+
     meta.role = 'mesero';
-    meta.tenant = sanitizeTenantId(msg.tenant || meta.tenant);
-    meta.waiterId = String(msg.id || 'juan').toLowerCase();
-    meta.sector = String(msg.sector || 'Terraza');
+    meta.tenant = requestedTenant;
+    meta.boundTenant = requestedTenant;
+    meta.waiterId = sanitizeOrderText(msg.id || 'juan', 32).toLowerCase();
+    meta.sector = sanitizeOrderText(msg.sector || 'Terraza', 40);
     meta.tenantSectorKey = `${meta.tenant}:${meta.sector.toLowerCase()}`;
     clients.set(socket, meta);
 
@@ -1208,11 +1767,28 @@ function handleWsMessage(socket, msg) {
   }
 
   if (type === 'REGISTER_CLIENT') {
+    const requestedTenant = sanitizeTenantId(msg.tenant || meta.boundTenant || meta.tenant);
+    if (meta.boundTenant && meta.boundTenant !== requestedTenant) {
+      logProdEvent('WARN', `[WS Isolation] Intento de cambio cruzado de tenant bloqueado (${meta.boundTenant} -> ${requestedTenant})`);
+      return;
+    }
+    const opState = getTenantOperationalState(requestedTenant);
+    if (!opState.operational) {
+      sendWsJson(socket, {
+        type: 'TENANT_NOT_OPERATIONAL',
+        tenant: requestedTenant,
+        estado: opState.estado,
+        error: `El local "${opState.nombre}" no está habilitado para recibir pedidos (${opState.estado}).`
+      });
+      return;
+    }
+
     meta.role = 'cliente';
-    meta.tenant = sanitizeTenantId(msg.tenant || meta.tenant);
-    meta.mesa = String(msg.mesa || '1');
-    meta.sector = String(msg.sector || 'Terraza');
-    meta.waiterId = String(msg.mesero_id || 'juan').toLowerCase();
+    meta.tenant = requestedTenant;
+    meta.boundTenant = requestedTenant;
+    meta.mesa = sanitizeOrderText(msg.mesa || '1', 16);
+    meta.sector = sanitizeOrderText(msg.sector || 'Terraza', 40);
+    meta.waiterId = sanitizeOrderText(msg.mesero_id || 'juan', 32).toLowerCase();
     meta.tenantSectorKey = `${meta.tenant}:${meta.sector.toLowerCase()}`;
     clients.set(socket, meta);
 
@@ -1242,13 +1818,42 @@ function handleWsMessage(socket, msg) {
     type === 'COMANDA' ||
     type === 'LLAMADO_MESERO'
   ) {
-    const order = msg.order || msg;
+    const rawOrder = msg.order || msg;
+    const effectiveTenant = sanitizeTenantId(
+      meta.boundTenant || rawOrder.tenant || msg.tenant || meta.tenant
+    );
+    if (
+      meta.boundTenant &&
+      rawOrder.tenant &&
+      sanitizeTenantId(rawOrder.tenant) !== meta.boundTenant
+    ) {
+      logProdEvent('WARN', `[WS Isolation] Comanda rechazada por discrepancia de tenant (${rawOrder.tenant} != ${meta.boundTenant})`);
+      return;
+    }
+
+    const opState = getTenantOperationalState(effectiveTenant);
+    if (!opState.operational) {
+      logProdEvent('WARN', `[WS Firewall] Comanda bloqueada en tenant no operativo [${effectiveTenant}] (estado=${opState.estado})`);
+      sendWsJson(socket, {
+        type: 'ORDER_REJECTED',
+        tenant: effectiveTenant,
+        estado: opState.estado,
+        error: `El restaurante se encuentra en estado "${opState.estado}" y no puede recibir comandas.`
+      });
+      return;
+    }
+
+    const order = validateAndSanitizeWsOrder(rawOrder, effectiveTenant);
     if (!order || !order.id) return;
 
-    order.tenant = sanitizeTenantId(order.tenant || msg.tenant || meta.tenant);
+    meta.boundTenant = effectiveTenant;
+    meta.tenant = effectiveTenant;
+    order.tenant = effectiveTenant;
     const orderTenantSectorKey = `${order.tenant}:${String(order.sector || 'Terraza').toLowerCase()}`;
 
-    const existingIdx = activeOrders.findIndex((o) => o.id === order.id);
+    const existingIdx = activeOrders.findIndex(
+      (o) => o.id === order.id && sanitizeTenantId(o.tenant) === order.tenant
+    );
     if (existingIdx === -1) {
       activeOrders.unshift(order);
       if (activeOrders.length > 300) activeOrders.pop();
@@ -1290,23 +1895,63 @@ function handleWsMessage(socket, msg) {
 
   if (type === 'UPDATE_ORDER_STATUS' || type === 'ESTADO_ACTUALIZADO') {
     const incomingOrder = msg.order;
-    const orderId = msg.orderId || (incomingOrder && incomingOrder.id);
-    const newStatus = msg.estado || (incomingOrder && incomingOrder.estado);
+    const orderId = sanitizeOrderText(msg.orderId || (incomingOrder && incomingOrder.id), 40);
+    const newStatus = sanitizeOrderText(msg.estado || (incomingOrder && incomingOrder.estado), 32);
 
     if (!orderId) return;
 
-    let targetOrder = activeOrders.find((o) => o.id === orderId);
-    if (targetOrder && newStatus) {
-      targetOrder.estado = newStatus;
+    const effectiveTenant = sanitizeTenantId(
+      meta.boundTenant || (incomingOrder && incomingOrder.tenant) || msg.tenant || meta.tenant
+    );
+    const opState = getTenantOperationalState(effectiveTenant);
+    if (!opState.operational) return;
+
+    let targetOrder = activeOrders.find(
+      (o) => o.id === orderId && sanitizeTenantId(o.tenant) === effectiveTenant
+    );
+    if (targetOrder) {
+      if (incomingOrder && typeof incomingOrder === 'object') {
+        const sanitizedIncoming = validateAndSanitizeWsOrder(
+          { ...targetOrder, ...incomingOrder, id: targetOrder.id },
+          effectiveTenant
+        );
+        if (sanitizedIncoming) {
+          targetOrder.items = sanitizedIncoming.items;
+          targetOrder.cuentasDivididas = sanitizedIncoming.cuentasDivididas;
+          targetOrder.total = sanitizedIncoming.total;
+        }
+        if (Array.isArray(incomingOrder.subAccountsCatalog)) {
+          targetOrder.subAccountsCatalog = incomingOrder.subAccountsCatalog
+            .slice(0, 12)
+            .map((s) => sanitizeOrderText(s, 48));
+        }
+        if (incomingOrder.verificadoCaja !== undefined) {
+          targetOrder.verificadoCaja = Boolean(incomingOrder.verificadoCaja);
+        }
+        if (incomingOrder.montoCorroborado !== undefined) {
+          targetOrder.montoCorroborado = Math.max(0, Number(incomingOrder.montoCorroborado) || 0);
+        }
+        if (incomingOrder.cobradoAt) {
+          targetOrder.cobradoAt = sanitizeOrderText(incomingOrder.cobradoAt, 40);
+        }
+      }
+      if (newStatus) {
+        targetOrder.estado = newStatus;
+      }
       targetOrder.updatedAt = new Date().toISOString();
     } else if (incomingOrder) {
-      incomingOrder.tenant = sanitizeTenantId(incomingOrder.tenant || msg.tenant || meta.tenant);
-      targetOrder = incomingOrder;
+      const sanitizedNew = validateAndSanitizeWsOrder(incomingOrder, effectiveTenant);
+      if (!sanitizedNew) return;
+      targetOrder = sanitizedNew;
       activeOrders.unshift(targetOrder);
     }
 
     if (!targetOrder) return;
     const targetTenant = sanitizeTenantId(targetOrder.tenant);
+
+    if (targetOrder.estado === 'Atendido') {
+      recordServerOrderHistory(targetOrder);
+    }
 
     console.log(
       `[WS] ✅ Estado actualizado [${targetTenant}:${targetOrder.sector}] [${targetOrder.id}] Mesa ${targetOrder.mesa} -> "${targetOrder.estado}"`
@@ -1339,8 +1984,20 @@ function handleWsMessage(socket, msg) {
   }
 
   if (type === 'CLEAR_SHIFT' || type === 'TURNO_ACTUALIZADO') {
-    const targetTenant = sanitizeTenantId(msg.tenant || meta.tenant);
+    const targetTenant = sanitizeTenantId(meta.boundTenant || msg.tenant || meta.tenant);
+    if (meta.boundTenant && msg.tenant && sanitizeTenantId(msg.tenant) !== meta.boundTenant) {
+      return;
+    }
+    const opState = getTenantOperationalState(targetTenant);
+    if (!opState.operational) return;
+
     const onlyAttended = msg.onlyAttended !== false;
+    activeOrders.forEach((o) => {
+      if (sanitizeTenantId(o.tenant) === targetTenant && (!onlyAttended || o.estado === 'Atendido')) {
+        recordServerOrderHistory(o);
+      }
+    });
+
     if (onlyAttended) {
       activeOrders = activeOrders.filter(
         (o) => sanitizeTenantId(o.tenant) !== targetTenant || o.estado !== 'Atendido'
@@ -1366,19 +2023,22 @@ function handleWsMessage(socket, msg) {
   }
 }
 
-function sendJsonResponse(res, statusCode, payload) {
+function sendJsonResponse(res, statusCode, payload, extraHeaders = {}) {
   const body = JSON.stringify(payload);
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': 'no-store'
+    'Cache-Control': 'no-store',
+    ...extraHeaders
   });
   res.end(body);
 }
 
 /**
- * Servidor HTTP para API REST (`/api/menu`, `/api/upload-model`, `/api/server-info`) y archivos estáticos.
+ * Servidor HTTP con WAF, Rate Limiting, Cabeceras de Seguridad OWASP, API REST y Archivos Estáticos.
  */
 const server = http.createServer(async (req, res) => {
+  applySecurityHeaders(req, res);
+
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader(
@@ -1392,13 +2052,111 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  let pathname = decodeURIComponent(parsedUrl.pathname);
+  const clientIp = getClientIp(req);
+
+  // Validar longitud de URL y formato básico
+  if (!req.url || req.url.length > 2048) {
+    sendJsonResponse(res, 414, { ok: false, error: 'URI demasiado larga.' });
+    return;
+  }
+
+  let parsedUrl;
+  let pathname;
+  try {
+    parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    pathname = decodeURIComponent(parsedUrl.pathname);
+  } catch (_) {
+    sendJsonResponse(res, 400, { ok: false, error: 'URL malformada.' });
+    return;
+  }
+
+  // 1. Firewall de Rutas (WAF) y Prevención de Path Traversal / Archivos Sensibles
+  if (isBlockedSensitivePath(pathname, req.url)) {
+    logProdEvent('WARN', `[WAF] Acceso bloqueado a ruta restringida desde IP ${clientIp}: ${pathname}`);
+    sendJsonResponse(res, 403, { ok: false, error: 'Acceso denegado por el firewall de seguridad.' });
+    return;
+  }
+
+  // Validar parámetro ?tenant= si viene en la query para rechazar Path Traversal o caracteres inválidos
+  if (parsedUrl.searchParams.has('tenant')) {
+    const rawQueryTenant = parsedUrl.searchParams.get('tenant');
+    if (rawQueryTenant && !isValidTenantSlug(rawQueryTenant)) {
+      logProdEvent('WARN', `[WAF] Parámetro tenant inválido rechazado desde IP ${clientIp}: ${rawQueryTenant}`);
+      sendJsonResponse(res, 400, { ok: false, error: 'Identificador de local (tenant) inválido.' });
+      return;
+    }
+  }
+
+  // 2. Rate Limiting por Categoría en Endpoints /api/*
+  if (pathname.startsWith('/api/')) {
+    if (pathname === '/api/auth/login') {
+      const lockout = checkAuthLockout(clientIp);
+      if (lockout.blocked) {
+        sendJsonResponse(
+          res,
+          429,
+          {
+            ok: false,
+            error: `Demasiados intentos fallidos. Acceso bloqueado temporalmente por seguridad (${Math.ceil(
+              lockout.retryAfterSec / 60
+            )} min).`
+          },
+          { 'Retry-After': String(lockout.retryAfterSec) }
+        );
+        return;
+      }
+      const loginRate = checkRateLimit(clientIp, 'auth-login', 15, 60 * 1000);
+      if (!loginRate.allowed) {
+        sendJsonResponse(
+          res,
+          429,
+          { ok: false, error: 'Demasiadas solicitudes de inicio de sesión. Intenta en un minuto.' },
+          { 'Retry-After': String(loginRate.retryAfterSec) }
+        );
+        return;
+      }
+    } else if (pathname === '/api/public/register-tenant') {
+      const regRate = checkRateLimit(clientIp, 'public-register', 8, 10 * 60 * 1000);
+      if (!regRate.allowed) {
+        logProdEvent('WARN', `[RateLimit] Límite de registro público excedido desde IP ${clientIp}`);
+        sendJsonResponse(
+          res,
+          429,
+          { ok: false, error: 'Se alcanzó el límite de solicitudes de registro desde tu conexión. Intenta más tarde.' },
+          { 'Retry-After': String(regRate.retryAfterSec) }
+        );
+        return;
+      }
+    } else if (req.method === 'POST' || req.method === 'PUT' || req.method === 'DELETE') {
+      const writeRate = checkRateLimit(clientIp, 'api-write', 45, 60 * 1000);
+      if (!writeRate.allowed) {
+        logProdEvent('WARN', `[RateLimit] Límite de escritura API excedido desde IP ${clientIp} en ${pathname}`);
+        sendJsonResponse(
+          res,
+          429,
+          { ok: false, error: 'Límite de operaciones de escritura alcanzado. Espera unos segundos.' },
+          { 'Retry-After': String(writeRate.retryAfterSec) }
+        );
+        return;
+      }
+    } else {
+      const generalRate = checkRateLimit(clientIp, 'api-general', 240, 60 * 1000);
+      if (!generalRate.allowed) {
+        sendJsonResponse(
+          res,
+          429,
+          { ok: false, error: 'Límite de consultas por minuto excedido. Intenta nuevamente en breve.' },
+          { 'Retry-After': String(generalRate.retryAfterSec) }
+        );
+        return;
+      }
+    }
+  }
 
   // 0. Endpoints de Autenticación Unificada por Rol (Mesero / Admin / SuperAdmin)
   if (pathname === '/api/auth/login' && req.method === 'POST') {
     try {
-      const bodyBuf = await readRequestBodyBuffer(req, 64 * 1024);
+      const bodyBuf = await readRequestBodyBuffer(req, 32 * 1024);
       const payload = JSON.parse(bodyBuf.toString('utf8'));
       const role =
         payload.role === 'superadmin'
@@ -1406,8 +2164,13 @@ const server = http.createServer(async (req, res) => {
           : payload.role === 'admin'
           ? 'admin'
           : 'waiter';
-      const tenant = role === 'superadmin' ? 'global' : sanitizeTenantId(payload.tenant || DEFAULT_TENANT);
-      const providedPin = String(payload.pin || '').trim();
+      const rawTenantInput = payload.tenant || DEFAULT_TENANT;
+      if (role !== 'superadmin' && !isValidTenantSlug(rawTenantInput)) {
+        sendJsonResponse(res, 400, { ok: false, error: 'Slug de local inválido.' });
+        return;
+      }
+      const tenant = role === 'superadmin' ? 'global' : sanitizeTenantId(rawTenantInput);
+      const providedPin = String(payload.pin || '').trim().slice(0, 64);
 
       let expectedPin = SUPERADMIN_MASTER_PIN;
       if (role !== 'superadmin') {
@@ -1415,8 +2178,31 @@ const server = http.createServer(async (req, res) => {
         expectedPin = role === 'admin' ? sec.adminPin : sec.waiterPin;
       }
 
-      if (!providedPin || (providedPin !== expectedPin && providedPin !== SUPERADMIN_MASTER_PIN)) {
-        logProdEvent('WARN', `Intento de login fallido para rol [${role}] en tenant [${tenant}]`);
+      if (
+        !providedPin ||
+        (!safeSecretCompare(providedPin, expectedPin) &&
+          !safeSecretCompare(providedPin, SUPERADMIN_MASTER_PIN))
+      ) {
+        const failRec = recordAuthFailure(clientIp, `login:${role}@${tenant}`);
+        logAuditEvent('AUTH_LOGIN_FAILED', {
+          ip: clientIp,
+          tenant,
+          role,
+          fails: failRec.fails
+        });
+        if (failRec.blockedUntil && failRec.blockedUntil > Date.now()) {
+          const retrySec = Math.ceil((failRec.blockedUntil - Date.now()) / 1000);
+          sendJsonResponse(
+            res,
+            429,
+            {
+              ok: false,
+              error: 'Demasiados intentos fallidos consecutivos. Tu IP fue bloqueada por 12 minutos.'
+            },
+            { 'Retry-After': String(retrySec) }
+          );
+          return;
+        }
         sendJsonResponse(res, 401, {
           ok: false,
           error:
@@ -1427,11 +2213,12 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
+      resetAuthFailures(clientIp);
       const token = createRoleAuthToken(tenant, role, expectedPin);
       const cookieName = `techapy_auth_${tenant}_${role}`;
-      const setCookie = `${cookieName}=${token}; HttpOnly; Path=/; Max-Age=43200; SameSite=Lax`;
+      const setCookie = buildAuthCookieHeader(req, cookieName, token, 43200);
 
-      logProdEvent('INFO', `Login exitoso para rol [${role}] en tenant [${tenant}]`);
+      logAuditEvent('AUTH_LOGIN_SUCCESS', { ip: clientIp, tenant, role });
       res.writeHead(200, {
         'Content-Type': 'application/json; charset=utf-8',
         'Set-Cookie': setCookie,
@@ -1439,20 +2226,30 @@ const server = http.createServer(async (req, res) => {
       });
       res.end(JSON.stringify({ ok: true, tenant, role }));
     } catch (err) {
-      sendJsonResponse(res, 400, { ok: false, error: 'Solicitud de autenticación malformada' });
+      sendJsonResponse(res, 400, { ok: false, error: 'Solicitud de autenticación malformada.' });
     }
     return;
   }
 
-  if (pathname === '/api/auth/logout' && req.method === 'POST') {
+  if (pathname === '/api/auth/logout' && (req.method === 'POST' || req.method === 'GET')) {
     const tenant = sanitizeTenantId(parsedUrl.searchParams.get('tenant') || DEFAULT_TENANT);
+    const existingCookies = parseCookies(req.headers.cookie);
+    const cookiesToClear = new Set([
+      `techapy_auth_${tenant}_waiter`,
+      `techapy_auth_${tenant}_admin`,
+      'techapy_auth_global_superadmin'
+    ]);
+    for (const cookieKey of Object.keys(existingCookies)) {
+      if (cookieKey.startsWith('techapy_auth_')) {
+        cookiesToClear.add(cookieKey);
+      }
+    }
+    logAuditEvent('AUTH_LOGOUT', { ip: clientIp, tenant });
     res.writeHead(200, {
       'Content-Type': 'application/json; charset=utf-8',
-      'Set-Cookie': [
-        `techapy_auth_${tenant}_waiter=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax`,
-        `techapy_auth_${tenant}_admin=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax`,
-        `techapy_auth_global_superadmin=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax`
-      ],
+      'Set-Cookie': Array.from(cookiesToClear).map((cName) =>
+        buildAuthCookieHeader(req, cName, '', 0)
+      ),
       'Cache-Control': 'no-store'
     });
     res.end(JSON.stringify({ ok: true }));
@@ -1463,7 +2260,16 @@ const server = http.createServer(async (req, res) => {
   if (pathname === '/api/superadmin/tenants' || pathname.startsWith('/api/superadmin/tenants/')) {
     const superAuth = verifyRoleAuthentication(req, parsedUrl, 'global', 'superadmin');
     if (!superAuth.authorized) {
-      logProdEvent('WARN', `Acceso API SuperAdmin rechazado en ${req.method} ${pathname}`);
+      logProdEvent('WARN', `Acceso API SuperAdmin rechazado desde IP ${clientIp} en ${req.method} ${pathname}`);
+      if (superAuth.lockedOut) {
+        sendJsonResponse(
+          res,
+          429,
+          { ok: false, error: 'IP bloqueada temporalmente por múltiples intentos fallidos.' },
+          { 'Retry-After': String(superAuth.retryAfterSec || 600) }
+        );
+        return;
+      }
       sendJsonResponse(res, 401, {
         ok: false,
         error: 'No autorizado. Se requiere autenticación de SuperAdmin (cookie o X-Superadmin-Key).'
@@ -1478,29 +2284,44 @@ const server = http.createServer(async (req, res) => {
         sendJsonResponse(res, 200, { ok: true, count: tenants.length, publicBaseUrl, tenants });
       } catch (err) {
         logProdEvent('ERROR', 'Error listando tenants en SuperAdmin', err.message);
-        sendJsonResponse(res, 500, { ok: false, error: err.message });
+        sendJsonResponse(res, 500, { ok: false, error: 'Error interno al consultar los restaurantes.' });
       }
       return;
     }
 
     if (pathname === '/api/superadmin/tenants' && req.method === 'POST') {
       try {
-        const bodyBuf = await readRequestBodyBuffer(req, 2 * 1024 * 1024);
+        const bodyBuf = await readRequestBodyBuffer(req, 512 * 1024);
         const payload = JSON.parse(bodyBuf.toString('utf8'));
+        if (payload.tenant && !isValidTenantSlug(payload.tenant)) {
+          sendJsonResponse(res, 400, {
+            ok: false,
+            error: 'El slug del restaurante solo puede contener letras minúsculas, números y guiones.'
+          });
+          return;
+        }
         const createdCfg = provisionNewTenantAtomically(payload);
-        logProdEvent(
-          'INFO',
-          `[SuperAdmin] Nuevo tenant aprovisionado: [${createdCfg.tenant}] (${createdCfg.nombre})`
-        );
+        logAuditEvent('TENANT_PROVISIONED', {
+          ip: clientIp,
+          tenant: createdCfg.tenant,
+          nombre: createdCfg.nombre,
+          estado: createdCfg.estado
+        });
         sendJsonResponse(res, 201, {
           ok: true,
           message: `Restaurante "${createdCfg.nombre}" (${createdCfg.tenant}) aprovisionado correctamente`,
           tenant: createdCfg
         });
       } catch (err) {
-        const code = err.statusCode || 400;
+        const code = err.statusCode === 409 ? 409 : 400;
         logProdEvent('WARN', '[SuperAdmin] Error creando tenant', err.message);
-        sendJsonResponse(res, code, { ok: false, error: err.message });
+        sendJsonResponse(res, code, {
+          ok: false,
+          error:
+            code === 409
+              ? 'El identificador (slug) del restaurante ya existe.'
+              : 'No se pudo aprovisionar el restaurante. Verifica los datos enviados.'
+        });
       }
       return;
     }
@@ -1508,14 +2329,30 @@ const server = http.createServer(async (req, res) => {
     const putMatch = pathname.match(/^\/api\/superadmin\/tenants\/([a-zA-Z0-9_-]+)$/);
     if (putMatch && req.method === 'PUT') {
       try {
-        const targetSlug = sanitizeTenantId(putMatch[1]);
-        const bodyBuf = await readRequestBodyBuffer(req, 2 * 1024 * 1024);
+        const rawSlug = putMatch[1];
+        if (!isValidTenantSlug(rawSlug)) {
+          sendJsonResponse(res, 400, { ok: false, error: 'Identificador de tenant inválido.' });
+          return;
+        }
+        const targetSlug = sanitizeTenantId(rawSlug);
+        const prevSec = getTenantSecurityConfig(targetSlug);
+        const bodyBuf = await readRequestBodyBuffer(req, 512 * 1024);
         const payload = JSON.parse(bodyBuf.toString('utf8'));
         const updatedCfg = updateExistingTenantAtomically(targetSlug, payload);
-        logProdEvent(
-          'INFO',
-          `[SuperAdmin] Tenant actualizado: [${updatedCfg.tenant}] (estado=${updatedCfg.estado})`
-        );
+
+        const pinChanged =
+          (payload.adminPin !== undefined && String(payload.adminPin).trim() !== prevSec.adminPin) ||
+          (payload.waiterPin !== undefined && String(payload.waiterPin).trim() !== prevSec.waiterPin);
+
+        logAuditEvent('TENANT_UPDATED_BY_SUPERADMIN', {
+          ip: clientIp,
+          tenant: updatedCfg.tenant,
+          action: payload.action || 'update',
+          estado: updatedCfg.estado,
+          fechaVencimiento: updatedCfg.fechaVencimiento,
+          pinChanged
+        });
+
         sendJsonResponse(res, 200, {
           ok: true,
           message: `Configuración de "${updatedCfg.nombre}" actualizada`,
@@ -1523,7 +2360,10 @@ const server = http.createServer(async (req, res) => {
         });
       } catch (err) {
         logProdEvent('ERROR', '[SuperAdmin] Error actualizando tenant', err.message);
-        sendJsonResponse(res, 400, { ok: false, error: err.message });
+        sendJsonResponse(res, 400, {
+          ok: false,
+          error: 'No se pudo actualizar la configuración del restaurante.'
+        });
       }
       return;
     }
@@ -1532,11 +2372,11 @@ const server = http.createServer(async (req, res) => {
   // 0c. Endpoint Público de Solicitud / Registro de Nuevo Restaurante desde Landing (Estado: "pendiente")
   if (pathname === '/api/public/register-tenant' && req.method === 'POST') {
     try {
-      const bodyBuf = await readRequestBodyBuffer(req, 512 * 1024);
+      const bodyBuf = await readRequestBodyBuffer(req, 128 * 1024);
       const payload = JSON.parse(bodyBuf.toString('utf8'));
-      const rawName = String(payload.nombre || payload.restaurant || '').trim();
-      if (!rawName) {
-        sendJsonResponse(res, 400, { ok: false, error: 'El nombre del restaurante es obligatorio.' });
+      const rawName = sanitizeOrderText(payload.nombre || payload.restaurant || '', 90);
+      if (!rawName || rawName.length < 2) {
+        sendJsonResponse(res, 400, { ok: false, error: 'El nombre del restaurante es obligatorio (mín. 2 caracteres).' });
         return;
       }
 
@@ -1548,42 +2388,44 @@ const server = http.createServer(async (req, res) => {
         .replace(/^-+|-+$/g, '')
         .slice(0, 26);
 
-      if (!baseSlug || baseSlug === 'demo' || baseSlug === 'global') {
+      if (!baseSlug || baseSlug === 'demo' || baseSlug === 'global' || !isValidTenantSlug(baseSlug)) {
         baseSlug = `local-${Date.now().toString().slice(-4)}`;
       }
 
-      // Si el slug ya existe y está Activo, añadir sufijo único; si ya existe como pendiente, actualizarlo
+      // Protección estricta contra colisión o sobrescritura de cuentas existentes (activas, suspendidas o pendientes)
       let finalSlug = baseSlug;
-      const candidateCfgPath = path.join(TENANTS_DATA_DIR, finalSlug, 'config.json');
-      if (fs.existsSync(candidateCfgPath)) {
-        try {
-          const existing = JSON.parse(fs.readFileSync(candidateCfgPath, 'utf8'));
-          if (normalizeTenantEstado(existing.estado) !== 'pendiente') {
-            finalSlug = `${baseSlug}-${Date.now().toString().slice(-3)}`;
-          }
-        } catch (_) {}
+      let attempt = 0;
+      while (
+        fs.existsSync(path.join(TENANTS_DATA_DIR, finalSlug, 'config.json')) &&
+        attempt < 10
+      ) {
+        attempt += 1;
+        const suffix = `${Date.now().toString().slice(-3)}${crypto.randomBytes(1).toString('hex')}`.slice(0, 5);
+        finalSlug = `${baseSlug.slice(0, 28)}-${suffix}`;
       }
 
       const createdCfg = provisionNewTenantAtomically(
         {
           tenant: finalSlug,
           nombre: rawName,
-          ruc: String(payload.ruc || '80000000-0').trim(),
-          ciudad: String(payload.ciudad || 'Asunción, Paraguay').trim(),
-          plan: String(payload.plan || 'Plan Restaurante de Autor').trim(),
+          ruc: sanitizeOrderText(payload.ruc || '80000000-0', 28),
+          ciudad: sanitizeOrderText(payload.ciudad || 'Asunción, Paraguay', 80),
+          plan: sanitizeOrderText(payload.plan || 'Plan Restaurante de Autor', 80),
           estado: 'pendiente',
           fechaSolicitud: new Date().toISOString(),
-          contactoNombre: String(payload.contactoNombre || '').trim(),
-          contactoWhatsapp: String(payload.contactoWhatsapp || '').trim(),
-          capacidadMesas: String(payload.capacidadMesas || '').trim()
+          contactoNombre: sanitizeOrderText(payload.contactoNombre || '', 80),
+          contactoWhatsapp: sanitizeOrderText(payload.contactoWhatsapp || '', 28),
+          capacidadMesas: sanitizeOrderText(payload.capacidadMesas || '', 24)
         },
-        { allowIfPending: true }
+        { allowIfPending: false }
       );
 
-      logProdEvent(
-        'INFO',
-        `[Landing Lead] Nuevo restaurante registrado en estado PENDIENTE: [${createdCfg.tenant}] (${createdCfg.nombre})`
-      );
+      logAuditEvent('TENANT_REGISTERED_PENDING', {
+        ip: clientIp,
+        tenant: createdCfg.tenant,
+        nombre: createdCfg.nombre,
+        estado: 'pendiente'
+      });
 
       sendJsonResponse(res, 201, {
         ok: true,
@@ -1602,7 +2444,7 @@ const server = http.createServer(async (req, res) => {
       });
     } catch (err) {
       logProdEvent('ERROR', 'Error en POST /api/public/register-tenant', err.message);
-      sendJsonResponse(res, 400, { ok: false, error: err.message });
+      sendJsonResponse(res, 400, { ok: false, error: 'Datos de solicitud inválidos.' });
     }
     return;
   }
@@ -1631,19 +2473,57 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Resolver rutas Multi-Tenant: /api/:tenant/menu, /api/:tenant/upload-model, /api/:tenant/config
-  const tenantRouteMatch = pathname.match(/^\/api\/([a-zA-Z0-9_-]+)\/(menu|upload-model|config)$/);
+  // Resolver rutas Multi-Tenant: /api/:tenant/menu, /api/:tenant/upload-model, /api/:tenant/config, /api/:tenant/orders-history
+  const tenantRouteMatch = pathname.match(/^\/api\/([a-zA-Z0-9_-]+)\/(menu|upload-model|config|orders-history)$/);
+  if (tenantRouteMatch && !isValidTenantSlug(tenantRouteMatch[1])) {
+    logProdEvent('WARN', `[WAF] Slug inválido en ruta API desde IP ${clientIp}: ${tenantRouteMatch[1]}`);
+    sendJsonResponse(res, 400, { ok: false, error: 'Identificador de local (tenant) inválido.' });
+    return;
+  }
   const routeTenant = tenantRouteMatch
     ? sanitizeTenantId(tenantRouteMatch[1])
     : sanitizeTenantId(parsedUrl.searchParams.get('tenant') || DEFAULT_TENANT);
   const routeAction = tenantRouteMatch ? tenantRouteMatch[2] : null;
+
+  // 1a. GET /api/:tenant/orders-history -> Historial de mesas cobradas/cerradas (Requiere sesión de Mesero/Admin del tenant o SuperAdmin)
+  if ((routeAction === 'orders-history' || pathname === '/api/orders-history') && req.method === 'GET') {
+    const staffAuth = verifyTenantStaffAccess(req, parsedUrl, routeTenant);
+    if (!staffAuth.authorized) {
+      sendJsonResponse(res, staffAuth.lockedOut ? 429 : 401, {
+        ok: false,
+        error: staffAuth.lockedOut
+          ? 'IP bloqueada temporalmente por intentos fallidos.'
+          : 'No autorizado. Se requiere sesión activa de Mesero o Administrador del local.'
+      });
+      return;
+    }
+
+    const attendedActive = activeOrders.filter(
+      (o) => sanitizeTenantId(o.tenant) === routeTenant && o.estado === 'Atendido'
+    );
+    const archivedForTenant = archivedHistoryOrders.filter(
+      (o) => sanitizeTenantId(o.tenant) === routeTenant
+    );
+    const byId = new Map();
+    attendedActive.forEach((o) => {
+      if (o && o.id) byId.set(o.id, o);
+    });
+    archivedForTenant.forEach((o) => {
+      if (o && o.id && !byId.has(o.id)) byId.set(o.id, o);
+    });
+    const history = Array.from(byId.values()).sort(
+      (a, b) => new Date(b.cobradoAt || b.timestamp || 0) - new Date(a.cobradoAt || a.timestamp || 0)
+    );
+    sendJsonResponse(res, 200, { ok: true, tenant: routeTenant, history });
+    return;
+  }
 
   // 1b. GET /api/:tenant/config (o GET /api/config?tenant=...) -> Oculta los PINs de seguridad e incluye estado de vencimiento y publicBaseUrl
   if ((routeAction === 'config' || pathname === '/api/config') && req.method === 'GET') {
     const { configPath } = getTenantPaths(routeTenant);
     fs.readFile(configPath, 'utf8', (err, content) => {
       if (err) {
-        sendJsonResponse(res, 500, { ok: false, error: 'No se pudo leer config.json del tenant' });
+        sendJsonResponse(res, 500, { ok: false, error: 'No se pudo leer la configuración del local.' });
         return;
       }
       try {
@@ -1665,22 +2545,30 @@ const server = http.createServer(async (req, res) => {
         }
         sendJsonResponse(res, 200, publicCfg);
       } catch (_) {
-        res.writeHead(200, {
-          'Content-Type': 'application/json; charset=utf-8',
-          'Cache-Control': 'no-store'
-        });
-        res.end(content);
+        sendJsonResponse(res, 500, { ok: false, error: 'Error procesando configuración del local.' });
       }
     });
     return;
   }
 
-  // POST /api/:tenant/config (o POST /api/config?tenant=...)
+  // POST /api/:tenant/config (o POST /api/config?tenant=...) -> Requiere autenticación de Admin o SuperAdmin
   if ((routeAction === 'config' || pathname === '/api/config') && req.method === 'POST') {
+    const adminAuth = verifyRoleAuthentication(req, parsedUrl, routeTenant, 'admin');
+    if (!adminAuth.authorized) {
+      logProdEvent('WARN', `Acceso rechazado en POST /api/${routeTenant}/config desde IP ${clientIp}`);
+      sendJsonResponse(res, adminAuth.lockedOut ? 429 : 401, {
+        ok: false,
+        error: adminAuth.lockedOut
+          ? 'IP bloqueada temporalmente por intentos fallidos.'
+          : 'No autorizado. Inicia sesión como Administrador del local.'
+      });
+      return;
+    }
+
     try {
       const { tenant, configPath } = getTenantPaths(routeTenant);
       const existingSec = getTenantSecurityConfig(tenant);
-      const bodyBuf = await readRequestBodyBuffer(req, 2 * 1024 * 1024);
+      const bodyBuf = await readRequestBodyBuffer(req, 512 * 1024);
       const parsed = JSON.parse(bodyBuf.toString('utf8'));
       const cfgError = validateTenantConfigJson(parsed);
       if (cfgError) {
@@ -1689,23 +2577,29 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       parsed.tenant = tenant;
-      parsed.adminPin = String(parsed.adminPin || existingSec.adminPin || '1234').trim();
-      parsed.waiterPin = String(parsed.waiterPin || existingSec.waiterPin || '5678').trim();
+      parsed.adminPin = String(parsed.adminPin || existingSec.adminPin || '1234').trim().slice(0, 32);
+      parsed.waiterPin = String(parsed.waiterPin || existingSec.waiterPin || '5678').trim().slice(0, 32);
       const formattedCfg = JSON.stringify(parsed, null, 2) + '\n';
       writeJsonAtomically(configPath, formattedCfg);
 
-      // Sincronizar con dist/data/tenants/{tenant}/config.json si dist/ existe
       const distConfigPath = path.join(DIST_DIR, 'data', 'tenants', tenant, 'config.json');
       if (fs.existsSync(DIST_DIR)) {
         fs.mkdirSync(path.dirname(distConfigPath), { recursive: true });
         writeJsonAtomically(distConfigPath, formattedCfg);
       }
 
-      logProdEvent('INFO', `Configuración actualizada para tenant [${tenant}]`);
+      const pinChanged =
+        parsed.adminPin !== existingSec.adminPin || parsed.waiterPin !== existingSec.waiterPin;
+
+      logAuditEvent('TENANT_CONFIG_UPDATED', {
+        ip: clientIp,
+        tenant,
+        pinChanged
+      });
       sendJsonResponse(res, 200, { ok: true, tenant, config: parsed });
     } catch (err) {
       logProdEvent('ERROR', `Error en POST /api/${routeTenant}/config`, err.message);
-      sendJsonResponse(res, 400, { ok: false, error: err.message });
+      sendJsonResponse(res, 400, { ok: false, error: 'Formato JSON de configuración inválido.' });
     }
     return;
   }
@@ -1715,7 +2609,7 @@ const server = http.createServer(async (req, res) => {
     const { menuPath } = getTenantPaths(routeTenant);
     fs.readFile(menuPath, 'utf8', (err, content) => {
       if (err) {
-        sendJsonResponse(res, 500, { ok: false, error: 'No se pudo leer menu-data.json del tenant' });
+        sendJsonResponse(res, 500, { ok: false, error: 'No se pudo leer el catálogo del local.' });
         return;
       }
       res.writeHead(200, {
@@ -1727,11 +2621,23 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 3. POST /api/:tenant/menu o POST /api/menu -> Valida, crea backup y sobrescribe atómicamente menu-data.json del tenant
+  // 3. POST /api/:tenant/menu o POST /api/menu -> Requiere Admin/SuperAdmin, valida, crea backup y guarda atómicamente
   if ((routeAction === 'menu' || pathname === '/api/menu') && req.method === 'POST') {
+    const adminAuth = verifyRoleAuthentication(req, parsedUrl, routeTenant, 'admin');
+    if (!adminAuth.authorized) {
+      logProdEvent('WARN', `Acceso rechazado en POST /api/${routeTenant}/menu desde IP ${clientIp}`);
+      sendJsonResponse(res, adminAuth.lockedOut ? 429 : 401, {
+        ok: false,
+        error: adminAuth.lockedOut
+          ? 'IP bloqueada temporalmente por intentos fallidos.'
+          : 'No autorizado. Inicia sesión como Administrador del local para editar la carta.'
+      });
+      return;
+    }
+
     try {
       const { tenant, menuPath, backupPath } = getTenantPaths(routeTenant);
-      const bodyBuf = await readRequestBodyBuffer(req, 5 * 1024 * 1024);
+      const bodyBuf = await readRequestBodyBuffer(req, 4 * 1024 * 1024);
       const parsed = JSON.parse(bodyBuf.toString('utf8'));
       const validationError = validateMenuJson(parsed);
 
@@ -1751,7 +2657,6 @@ const server = http.createServer(async (req, res) => {
         writeJsonAtomically(MENU_FILE_PATH, formattedJson);
       }
 
-      // Sincronizar con dist/data/tenants/{tenant}/menu-data.json si dist/ existe
       if (fs.existsSync(DIST_DIR)) {
         const distTenantMenuPath = path.join(DIST_DIR, 'data', 'tenants', tenant, 'menu-data.json');
         fs.mkdirSync(path.dirname(distTenantMenuPath), { recursive: true });
@@ -1763,10 +2668,11 @@ const server = http.createServer(async (req, res) => {
         }
       }
 
-      logProdEvent(
-        'INFO',
-        `Carta actualizada [${tenant}] en data/tenants/${tenant}/menu-data.json (${parsed.platos.length} platos)`
-      );
+      logAuditEvent('TENANT_MENU_UPDATED', {
+        ip: clientIp,
+        tenant,
+        platosCount: parsed.platos.length
+      });
 
       for (const [clientSocket, info] of clients.entries()) {
         if (sanitizeTenantId(info.tenant) === tenant) {
@@ -1783,26 +2689,37 @@ const server = http.createServer(async (req, res) => {
         ok: true,
         tenant,
         message: 'Carta guardada correctamente y copia de seguridad creada',
-        backupPath: `data/tenants/${tenant}/menu-data.backup.json`,
         platosCount: parsed.platos.length
       });
     } catch (err) {
       logProdEvent('ERROR', `Error procesando JSON en POST /api/${routeTenant}/menu`, err.message);
       sendJsonResponse(res, 400, {
         ok: false,
-        error: `Error procesando JSON de la carta: ${err.message}`
+        error: 'El contenido enviado para la carta no es un JSON válido.'
       });
     }
     return;
   }
 
-  // 4. POST /api/:tenant/upload-model o POST /api/upload-model -> Guarda .glb en assets/tenants/{tenant}/models/
+  // 4. POST /api/:tenant/upload-model o POST /api/upload-model -> Requiere Admin/SuperAdmin y valida binario .glb
   if ((routeAction === 'upload-model' || pathname === '/api/upload-model') && req.method === 'POST') {
+    const adminAuth = verifyRoleAuthentication(req, parsedUrl, routeTenant, 'admin');
+    if (!adminAuth.authorized) {
+      logProdEvent('WARN', `Acceso rechazado en POST /api/${routeTenant}/upload-model desde IP ${clientIp}`);
+      sendJsonResponse(res, adminAuth.lockedOut ? 429 : 401, {
+        ok: false,
+        error: adminAuth.lockedOut
+          ? 'IP bloqueada temporalmente por intentos fallidos.'
+          : 'No autorizado. Inicia sesión como Administrador del local para subir modelos 3D.'
+      });
+      return;
+    }
+
     try {
       const { tenant, modelsDir } = getTenantPaths(routeTenant);
       fs.mkdirSync(modelsDir, { recursive: true });
       const contentType = (req.headers['content-type'] || '').toLowerCase();
-      const bodyBuf = await readRequestBodyBuffer(req, 60 * 1024 * 1024);
+      const bodyBuf = await readRequestBodyBuffer(req, 50 * 1024 * 1024);
 
       let filename = '';
       let fileBuffer = null;
@@ -1815,7 +2732,7 @@ const server = http.createServer(async (req, res) => {
           ''
         );
         if (!rawBase64) {
-          sendJsonResponse(res, 400, { ok: false, error: 'El campo dataBase64 está vacío' });
+          sendJsonResponse(res, 400, { ok: false, error: 'El campo dataBase64 está vacío.' });
           return;
         }
         fileBuffer = Buffer.from(rawBase64, 'base64');
@@ -1833,15 +2750,33 @@ const server = http.createServer(async (req, res) => {
       if (!fileBuffer || fileBuffer.length < 12) {
         sendJsonResponse(res, 400, {
           ok: false,
-          error: 'El archivo .glb recibido está vacío o incompleto'
+          error: 'El archivo .glb recibido está vacío o incompleto.'
         });
         return;
       }
 
-      const targetDiskPath = path.join(modelsDir, filename);
+      // Validar firma binaria glTF ('glTF' = 0x67 0x6C 0x54 0x46) para evitar subida de archivos ejecutables o scripts disfrazados
+      const magicHeader = fileBuffer.subarray(0, 4).toString('ascii');
+      if (magicHeader !== 'glTF') {
+        sendJsonResponse(res, 400, {
+          ok: false,
+          error: 'El archivo subido no tiene una cabecera binaria glTF (.glb) válida.'
+        });
+        return;
+      }
+
+      if (!isValidSafeFilename(filename)) {
+        sendJsonResponse(res, 400, { ok: false, error: 'Nombre de archivo .glb inválido.' });
+        return;
+      }
+
+      const targetDiskPath = path.resolve(modelsDir, filename);
+      if (!targetDiskPath.startsWith(path.resolve(modelsDir) + path.sep)) {
+        sendJsonResponse(res, 403, { ok: false, error: 'Nombre de archivo no permitido.' });
+        return;
+      }
       fs.writeFileSync(targetDiskPath, fileBuffer);
 
-      // Sincronizar modelo 3D en dist/assets/tenants/{tenant}/models/ si dist/ existe
       if (fs.existsSync(DIST_DIR)) {
         const distModelDir = path.join(DIST_DIR, 'assets', 'tenants', tenant, 'models');
         fs.mkdirSync(distModelDir, { recursive: true });
@@ -1849,10 +2784,12 @@ const server = http.createServer(async (req, res) => {
       }
 
       const relativeModelPath = `./assets/tenants/${tenant}/models/${filename}`;
-      logProdEvent(
-        'INFO',
-        `Modelo 3D guardado [${tenant}]: ${relativeModelPath} (${(fileBuffer.length / 1024).toFixed(1)} KB)`
-      );
+      logAuditEvent('TENANT_MODEL_UPLOADED', {
+        ip: clientIp,
+        tenant,
+        filename,
+        sizeKB: Number((fileBuffer.length / 1024).toFixed(1))
+      });
 
       sendJsonResponse(res, 200, {
         ok: true,
@@ -1862,9 +2799,10 @@ const server = http.createServer(async (req, res) => {
         sizeBytes: fileBuffer.length
       });
     } catch (err) {
+      logProdEvent('ERROR', `Error subiendo modelo .glb en [${routeTenant}]`, err.message);
       sendJsonResponse(res, 400, {
         ok: false,
-        error: `Error subiendo modelo .glb: ${err.message}`
+        error: 'No se pudo procesar el archivo .glb subido.'
       });
     }
     return;
@@ -1879,10 +2817,9 @@ const server = http.createServer(async (req, res) => {
     pathname = '/index.html';
   }
 
-  // Bloquear lectura estática directa de config.json para proteger adminPin y waiterPin
-  if (/^\/data\/tenants\/[^/]+\/config\.json$/i.test(pathname)) {
-    res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ ok: false, error: 'Acceso directo a config.json prohibido por seguridad' }));
+  // Bloquear lectura estática directa de config.json o cualquier archivo restringido
+  if (isBlockedSensitivePath(pathname, req.url)) {
+    sendJsonResponse(res, 403, { ok: false, error: 'Acceso prohibido por seguridad.' });
     return;
   }
 
@@ -1930,6 +2867,14 @@ const server = http.createServer(async (req, res) => {
   if (requiredRole) {
     const authResult = verifyRoleAuthentication(req, parsedUrl, activeTenant, requiredRole);
     if (!authResult.authorized) {
+      if (authResult.lockedOut) {
+        res.writeHead(429, {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Retry-After': String(authResult.retryAfterSec || 600)
+        });
+        res.end('429 Too Many Requests — Acceso bloqueado temporalmente por intentos fallidos.');
+        return;
+      }
       logProdEvent(
         'WARN',
         `Acceso no autenticado interceptado en ${pathname} [tenant=${activeTenant}, rol=${requiredRole}] -> HTTP 401 Modal Login`
@@ -1945,19 +2890,25 @@ const server = http.createServer(async (req, res) => {
     authCookieToSet = authResult.cookieHeader;
   }
 
-  // Priorizar servicio estático desde la carpeta compilada `dist/` (Cloud Production Ready)
-  const staticRoot = fs.existsSync(DIST_DIR) ? DIST_DIR : ROOT_DIR;
-  let safePath = path.normalize(path.join(staticRoot, pathname));
-  if (!safePath.startsWith(staticRoot)) {
+  // Priorizar servicio estático desde la carpeta compilada `dist/` con prevención estricta de Path Traversal
+  const staticRoot = path.resolve(fs.existsSync(DIST_DIR) ? DIST_DIR : ROOT_DIR);
+  const relativeTarget = pathname.replace(/^\/+/, '');
+  let safePath = path.resolve(staticRoot, relativeTarget);
+  if (safePath !== staticRoot && !safePath.startsWith(staticRoot + path.sep)) {
     res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('403 Forbidden');
     return;
   }
 
-  // Fallback a ROOT_DIR si un recurso dinámico (/assets/tenants o /data/tenants) no está aún en dist/
-  if (!fs.existsSync(safePath) && staticRoot === DIST_DIR) {
-    const fallbackRootPath = path.normalize(path.join(ROOT_DIR, pathname));
-    if (fallbackRootPath.startsWith(ROOT_DIR) && fs.existsSync(fallbackRootPath)) {
+  // Fallback seguro a ROOT_DIR únicamente para recursos dinámicos permitidos (/assets/tenants o /data/tenants)
+  if (!fs.existsSync(safePath) && staticRoot === path.resolve(DIST_DIR)) {
+    const resolvedRoot = path.resolve(ROOT_DIR);
+    const fallbackRootPath = path.resolve(resolvedRoot, relativeTarget);
+    if (
+      fallbackRootPath.startsWith(resolvedRoot + path.sep) &&
+      !isBlockedSensitivePath(pathname, req.url) &&
+      fs.existsSync(fallbackRootPath)
+    ) {
       safePath = fallbackRootPath;
     }
   }
@@ -1984,18 +2935,77 @@ const server = http.createServer(async (req, res) => {
     const stream = fs.createReadStream(safePath);
     stream.on('error', () => {
       if (!res.headersSent) {
-        res.writeHead(500);
+        res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
       }
-      res.end();
+      res.end('Error al servir recurso');
     });
     stream.pipe(res);
   });
 });
 
 /**
+ * Valida la cabecera Origin en conexiones WebSocket cuando viene presente,
+ * permitiendo mismo host, red local (LAN/localhost) o el dominio público en Render.
+ */
+function isAllowedWsOrigin(req) {
+  const originHeader = String((req && req.headers && req.headers.origin) || '').trim();
+  if (!originHeader || originHeader === 'null') return true;
+  try {
+    const originUrl = new URL(originHeader);
+    const reqHost = String(
+      (req.headers && (req.headers['x-forwarded-host'] || req.headers.host)) || ''
+    )
+      .split(',')[0]
+      .trim()
+      .toLowerCase();
+    const originHost = originUrl.host.toLowerCase();
+    const originHostname = originUrl.hostname.toLowerCase();
+    if (reqHost && (originHost === reqHost || originHostname === reqHost.split(':')[0])) {
+      return true;
+    }
+    if (isPrivateOrLocalUrl(originHeader)) {
+      return true;
+    }
+    if (originHostname.endsWith('.onrender.com')) {
+      return true;
+    }
+    const pubBase = resolvePublicBaseUrl(req);
+    if (pubBase) {
+      const pubUrl = new URL(pubBase);
+      if (originUrl.hostname.toLowerCase() === pubUrl.hostname.toLowerCase()) {
+        return true;
+      }
+    }
+    return false;
+  } catch (_) {
+    return false;
+  }
+}
+
+const MAX_WS_FRAME_BYTES = 64 * 1024;
+
+/**
  * Upgrade HTTP -> WebSocket RFC 6455 en `/ws`.
  */
 server.on('upgrade', (req, socket) => {
+  const clientIp = getClientIp(req);
+  const wsUpgradeRate = checkRateLimit(clientIp, 'ws-upgrade', 60, 60 * 1000);
+  if (!wsUpgradeRate.allowed) {
+    socket.write('HTTP/1.1 429 Too Many Requests\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
+  if (!isAllowedWsOrigin(req)) {
+    logAuditEvent('WS_ORIGIN_REJECTED', {
+      ip: clientIp,
+      origin: String((req.headers && req.headers.origin) || '')
+    });
+    socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
   const upgradeHeader = (req.headers['upgrade'] || '').toLowerCase();
   const key = req.headers['sec-websocket-key'];
 
@@ -2023,6 +3033,7 @@ server.on('upgrade', (req, socket) => {
 
   clients.set(socket, {
     role: 'connected',
+    ip: clientIp,
     connectedAt: new Date().toISOString()
   });
 
@@ -2031,8 +3042,8 @@ server.on('upgrade', (req, socket) => {
   socket.on('data', (chunk) => {
     try {
       recvBuffer = Buffer.concat([recvBuffer, chunk]);
-      if (recvBuffer.length > 5 * 1024 * 1024) {
-        logProdEvent('WARN', 'Buffer WebSocket excedió 5MB; cerrando conexión anómala');
+      if (recvBuffer.length > 512 * 1024) {
+        logProdEvent('WARN', `Buffer WebSocket excedió 512KB desde IP ${clientIp}; cerrando conexión`);
         socket.destroy();
         return;
       }
@@ -2040,12 +3051,23 @@ server.on('upgrade', (req, socket) => {
       recvBuffer = remaining;
 
       for (const frame of messages) {
+        if (frame.payload && frame.payload.length > MAX_WS_FRAME_BYTES) {
+          logProdEvent('WARN', `[WS Firewall] Frame supera ${MAX_WS_FRAME_BYTES} bytes desde IP ${clientIp}`);
+          // RFC 6455 Close code 1009 (Message Too Big)
+          const closeFrame = Buffer.from([0x88, 0x02, 0x03, 0xf1]);
+          try {
+            socket.write(closeFrame);
+          } catch (_) {}
+          socket.end();
+          return;
+        }
         if (frame.opcode === 0x08) {
           socket.end();
           return;
         }
         if (frame.opcode === 0x09) {
-          const pong = Buffer.concat([Buffer.from([0x8a, frame.payload.length]), frame.payload]);
+          const pongPayload = frame.payload.subarray(0, 125);
+          const pong = Buffer.concat([Buffer.from([0x8a, pongPayload.length]), pongPayload]);
           socket.write(pong);
           continue;
         }
@@ -2078,6 +3100,33 @@ server.on('upgrade', (req, socket) => {
 server.on('error', (err) => {
   logProdEvent('ERROR', 'Error en servidor HTTP principal', err ? err.message : '');
 });
+
+/**
+ * Cierre limpio y resiliente ante señales del sistema (SIGTERM / SIGINT en Render o contenedor).
+ */
+let isShuttingDown = false;
+function handleGracefulShutdown(signal) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  logProdEvent('INFO', `Señal ${signal} recibida. Cerrando conexiones WebSocket y servidor HTTP...`);
+  for (const [clientSocket] of clients.entries()) {
+    try {
+      clientSocket.end();
+      clientSocket.destroy();
+    } catch (_) {}
+  }
+  clients.clear();
+  server.close(() => {
+    logProdEvent('INFO', 'Servidor TechaPY detenido limpiamente.');
+    process.exit(0);
+  });
+  setTimeout(() => {
+    process.exit(0);
+  }, 4000).unref();
+}
+
+process.on('SIGTERM', () => handleGracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => handleGracefulShutdown('SIGINT'));
 
 server.listen(PORT, '0.0.0.0', () => {
   const lanIp = getLocalLanIp();

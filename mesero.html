@@ -32,6 +32,16 @@
       </div>
 
       <div class="header-controls">
+        <button id="toggle-history-btn" class="sound-btn" type="button" title="Ver historial de mesas cobradas, subcuentas y conteo de caja">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+            <line x1="16" y1="13" x2="8" y2="13"></line>
+            <line x1="16" y1="17" x2="8" y2="17"></line>
+          </svg>
+          <span>Historial de Mesas</span>
+          <span id="history-count-badge" class="history-count-badge">0</span>
+        </button>
         <button id="sound-toggle-btn" class="sound-btn active" type="button" title="Probar y activar campana de alerta">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
@@ -89,8 +99,36 @@
         <button type="button" class="status-pill active" data-status="ALL">Todas</button>
         <button type="button" class="status-pill" data-status="Pendiente">Pendientes</button>
         <button type="button" class="status-pill" data-status="Cargado en Caja">En Caja</button>
-        <button type="button" class="status-pill" data-status="Atendido">Atendidas</button>
+        <button type="button" class="status-pill" data-status="Atendido">Atendidas / Cobradas</button>
       </div>
+    </section>
+
+    <!-- Panel Consultable de Historial de Mesas, Subcuentas y Conteo para Cierre de Caja -->
+    <section id="tables-history-section" class="tables-history-section hidden" aria-label="Historial de mesas cobradas y conteo del turno">
+      <div class="history-panel-header">
+        <div>
+          <span class="editorial-kicker">CONTROL DE CAJA Y CONTEO DEL MOZO</span>
+          <h2>Historial de Mesas del Turno y Subcuentas</h2>
+        </div>
+        <button id="close-history-section-btn" type="button" class="icon-close-btn" aria-label="Ocultar historial">✕</button>
+      </div>
+
+      <div class="history-summary-grid">
+        <div class="history-stat-box">
+          <span>Mesas Cobradas / Cerradas</span>
+          <strong id="hist-closed-count">0</strong>
+        </div>
+        <div class="history-stat-box">
+          <span>Total Cobrado y Corroborado</span>
+          <strong id="hist-collected-total">Gs. 0</strong>
+        </div>
+        <div class="history-stat-box">
+          <span>Pendiente por Cobrar en Salón</span>
+          <strong id="hist-pending-total">Gs. 0</strong>
+        </div>
+      </div>
+
+      <div id="tables-history-list" class="tables-history-list"></div>
     </section>
 
     <!-- Contenedor principal de tarjetas de comanda -->

@@ -175,6 +175,17 @@
         <!-- Contenedor dinámico de variantes, cocción, picante, sabores y extras -->
         <div id="dish-options-container" class="dish-options-container" aria-label="Personalización del plato"></div>
 
+        <!-- Selector rápido de Cuenta Dividida / Familia dentro de la misma mesa -->
+        <div class="subaccount-assign-bar" aria-label="Asignar plato a cuenta o familia de la mesa">
+          <div class="subaccount-assign-header">
+            <span class="subaccount-assign-label">Cuenta / Familia en esta mesa:</span>
+            <button id="add-subaccount-quick-btn" class="subaccount-add-btn" type="button" title="Crear nueva cuenta o familia en esta mesa">
+              + Nueva Cuenta / Familia
+            </button>
+          </div>
+          <div id="dish-subaccount-pills" class="subaccount-pills-row" role="radiogroup" aria-label="Cuentas de la mesa"></div>
+        </div>
+
         <div class="dish-actions">
           <button id="toggle-nutrition-btn" class="btn-secondary" type="button">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -307,15 +318,18 @@
         </div>
       </div>
 
-      <!-- Lista de platos en la comanda -->
+      <!-- Lista de platos en la comanda (con selector para mover cada ítem de Cuenta / Familia) -->
       <div id="order-items-list" class="order-items-list"></div>
+
+      <!-- Resumen de Cuentas Divididas (Subtotales por Familia / Grupo) -->
+      <div id="split-accounts-summary" class="split-accounts-summary"></div>
 
       <!-- Estado en vivo de la última comanda enviada -->
       <div id="live-order-status" class="live-order-status hidden"></div>
 
       <div class="order-summary-footer">
         <div class="order-total-row">
-          <span>Total estimado</span>
+          <span>Total General de la Mesa</span>
           <strong id="order-total-amount">Gs. 0</strong>
         </div>
 

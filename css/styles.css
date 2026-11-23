@@ -121,17 +121,21 @@ body.ar-passthrough-active .viewer-stage {
   pointer-events: none;
 }
 
-/* Reactivar eventos de puntero únicamente en controles interactivos y tarjetas */
+/* Reactivar eventos de puntero con prioridad táctil en controles interactivos y tarjetas */
 .brand-row,
 .category-tabs,
 .cart-btn,
 .call-waiter-btn,
+.viewer-buttons-row,
 .ar-launch-btn,
 .exit-ar-btn,
 .native-ar-secondary-btn,
 .dimensions-toggle-btn,
 .ar-scale-calibrator,
 .ar-cal-btn,
+.subaccount-assign-bar,
+.subaccount-pill,
+.subaccount-add-btn,
 .dish-detail-card,
 .dish-options-container,
 .dishes-carousel,
@@ -142,7 +146,8 @@ body.ar-passthrough-active .viewer-stage {
 .btn-primary,
 .btn-secondary,
 .icon-btn {
-  pointer-events: auto;
+  pointer-events: auto !important;
+  touch-action: manipulation;
 }
 
 /* Barra superior compacta anclada al borde superior del visor 3D */
@@ -151,7 +156,7 @@ body.ar-passthrough-active .viewer-stage {
   top: 8px;
   left: 10px;
   right: 10px;
-  z-index: 10;
+  z-index: 28;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -416,7 +421,7 @@ body.ar-passthrough-active .category-tabs {
   left: 10px;
   right: 10px;
   bottom: 10px;
-  z-index: 10;
+  z-index: 28;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -431,7 +436,7 @@ body.ar-passthrough-active .category-tabs {
   display: flex;
   align-items: center;
   min-width: 0;
-  pointer-events: none;
+  pointer-events: auto;
 }
 
 .viewer-buttons-row {
@@ -441,7 +446,7 @@ body.ar-passthrough-active .category-tabs {
   justify-content: flex-end;
   gap: 6px;
   margin-left: auto;
-  pointer-events: none;
+  pointer-events: auto !important;
 }
 
 .ar-launch-btn {
@@ -831,6 +836,149 @@ body.ar-passthrough-active .bottom-dock {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: var(--accent-secondary);
+}
+
+/* Selector de Cuenta Dividida / Familia por Mesa */
+.subaccount-assign-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--glass-border);
+}
+
+.subaccount-assign-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.subaccount-assign-label {
+  font-size: 0.69rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.subaccount-add-btn {
+  background: rgba(197, 160, 89, 0.14);
+  border: 1px solid rgba(197, 160, 89, 0.35);
+  color: var(--accent-secondary);
+  padding: 3px 9px;
+  border-radius: var(--radius-pill);
+  font-family: var(--font-sans);
+  font-size: 0.68rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+
+.subaccount-add-btn:hover {
+  background: rgba(197, 160, 89, 0.24);
+  border-color: var(--accent-primary);
+}
+
+.subaccount-pills-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.subaccount-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--glass-border);
+  color: var(--text-muted);
+  padding: 5px 11px;
+  border-radius: var(--radius-pill);
+  font-family: var(--font-sans);
+  font-size: 0.74rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.16s ease;
+}
+
+.subaccount-pill.active {
+  background: rgba(197, 160, 89, 0.2);
+  border-color: var(--accent-primary);
+  color: #ffffff;
+}
+
+.item-subaccount-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+}
+
+.item-subaccount-label {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.item-subaccount-select {
+  background: rgba(197, 160, 89, 0.12);
+  border: 1px solid rgba(197, 160, 89, 0.32);
+  color: var(--accent-secondary);
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-family: var(--font-sans);
+  font-size: 0.71rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.item-subaccount-select option {
+  background: #15181e;
+  color: var(--text-main);
+}
+
+.split-accounts-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: rgba(197, 160, 89, 0.06);
+  border: 1px solid rgba(197, 160, 89, 0.25);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+
+.split-accounts-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent-primary);
+}
+
+.split-account-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.79rem;
+  font-weight: 600;
+  color: var(--text-main);
+  padding: 3px 0;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.07);
+}
+
+.split-account-row:last-child {
+  border-bottom: none;
+}
+
+.split-account-row strong {
+  color: var(--accent-secondary);
+  font-variant-numeric: tabular-nums;
 }
 
 .dish-actions {

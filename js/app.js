@@ -50,8 +50,10 @@ export class Menu3DApp {
     this.xrReferenceSpace = null;
     this.xrReticle = null;
 
-    // Estado del carrito / comanda: cartKey -> { cartKey, dishId, nombreBase, nombre, resumenOpciones, opcionesDetalle, precioUnitario, cantidad }
+    // Estado del carrito / comanda y Cuentas Divididas por Familias/Grupos en la misma mesa
     this.cart = new Map();
+    this.subAccounts = ['Cuenta 1 (Familia A)', 'Cuenta 2 (Familia B)'];
+    this.activeSubAccount = 'Cuenta 1 (Familia A)';
     this.lastOrderId = null;
 
     // Contexto de tenant/mesa/sector/mesero desde URL (?tenant=demo&mesa=4&sector=Terraza&mesero=juan)
@@ -723,9 +725,14 @@ export class Menu3DApp {
       this.updateDimensionsGuide(dish);
       this.updateARCalibratorUI(dish);
       this.syncRendererViewportAndClear();
+      this.setLoading(false);
 
-      // Preparar modelo GLB en escala real 1:1 para el visor AR (@google/model-viewer)
-      await this.prepareARModelSource(dish, modelGroup, cameFromGLB);
+      // Preparar modelo GLB en segundo plano sin bloquear la UI ni congelar el hilo principal
+      setTimeout(() => {
+        if (requestId === this.loadRequestId && this.currentModel === modelGroup) {
+          this.prepareARModelSource(dish, modelGroup, cameFromGLB).catch(() => {});
+        }
+      }, 80);
     } finally {
       if (requestId === this.loadRequestId) {
         this.setLoading(false);
@@ -1476,22 +1483,16 @@ export class Menu3DApp {
 
   /**
    * Punto de entrada unificado al pulsar "Ver en mi mesa (AR) 1:1":
-   * - Si el navegador/dispositivo soporta WebXR `immersive-ar` con `hit-test`, detecta el plano real
-   *   de la mesa y coloca/escala el plato 1:1 automáticamente.
-   * - En caso contrario, inicia automáticamente el modo cámara passthrough (`getUserMedia`)
-   *   con calibración óptica universal 1:1 y control de ajuste fino.
+   * Inicia de inmediato la vista AR 1:1 en cámara directa sin bloquear la interfaz ni ocultar el modelo
+   * mientras se inicializa el hardware de cámara.
    */
   async launchAutoARMode() {
-    if (this.isWebXRSupported && navigator.xr) {
-      await this.startWebXRHitTestSession();
-    } else {
-      await this.startARPassthroughMode();
-    }
+    await this.startARPassthroughMode();
   }
 
   /**
-   * Inicia una sesión WebXR `immersive-ar` con `hit-test` real para colocar y escalar automáticamente
-   * el plato 1:1 sobre el plano físico detectado de la mesa (`1 unidad = 1 metro`).
+   * Inicia una sesión WebXR `immersive-ar` con `hit-test` real cuando se solicita explícitamente.
+   * Mantiene visible el plato 1:1 desde el primer fotograma y permite salir con prioridad táctil.
    */
   async startWebXRHitTestSession() {
     if (!navigator.xr || !this.isWebXRSupported) {
@@ -1500,10 +1501,6 @@ export class Menu3DApp {
     }
 
     try {
-      // Ocultar modelo de estudio antes de cambiar de modo para evitar fotograma gigante inicial
-      if (this.currentModel) {
-        this.currentModel.visible = false;
-      }
       this.disposeDimensionsGuide();
       this.syncRendererViewportAndClear();
 
@@ -1533,10 +1530,12 @@ export class Menu3DApp {
       if (openArBtn) openArBtn.classList.add('hidden');
       if (exitArBtn) exitArBtn.classList.remove('hidden');
 
-      // Escalar el modelo a metros reales pero mantenerlo oculto hasta que el primer hit-test detecte la mesa
+      // Escalar el modelo a metros reales y mostrarlo de inmediato a 50 cm frente al visor hasta que el hit-test ancle en mesa
       const widthMeters = this.normalizeModelToRealMetricMeters(this.currentDish);
       if (this.currentModel) {
-        this.currentModel.visible = false;
+        this.currentModel.position.y += -0.18;
+        this.currentModel.position.z += -0.52;
+        this.currentModel.visible = true;
       }
       this.updateARCalibratorUI(this.currentDish);
 
@@ -1596,10 +1595,11 @@ export class Menu3DApp {
   }
 
   /**
-   * Activa el Modo Cámara Directa (AR Passthrough 1:1) sin salto gigante ni residuos visuales:
-   * - Oculta el modelo de estudio y limpia los buffers WebGL antes de cambiar dimensiones del contenedor.
-   * - Enciende la cámara trasera (`facingMode: 'environment'`) detrás del canvas transparente (`alpha: true`).
-   * - Aplica la escala métrica 1:1 universal y posiciona la cámara antes de volver a hacer visible el plato.
+   * Activa el Modo Cámara Directa (AR Passthrough 1:1) con arranque instantáneo sin bloqueos:
+   * 1. De forma síncrona (< 2ms): activa los controles de salida/calibración (`Salir de AR`, `-`, `1:1`, `+`)
+   *    y renderiza el plato 3D en escala métrica real 1:1 (`anchoCm / 100` m, base en `y = 0`) de inmediato.
+   * 2. En segundo plano (con timeout de seguridad de 4s): enciende la cámara trasera detrás del canvas transparente.
+   *    Si la cámara tarda o no está disponible, el modelo 3D 1:1 y todos los botones siguen 100% operativos.
    */
   async startARPassthroughMode() {
     if (this.isARPassthroughActive) {
@@ -1619,24 +1619,44 @@ export class Menu3DApp {
     const exitArBtn = document.getElementById('exit-ar-btn');
     const secondaryNativeBtn = document.getElementById('secondary-native-ar-btn');
 
+    // 1. Arranque síncrono e inmediato de la escena AR 1:1 y controles táctiles (sin esperar a getUserMedia)
+    this.setLoading(false);
+    this.isARPassthroughActive = true;
+    this.arUserScaleFactor = 1.0;
+    this.disposeDimensionsGuide();
+    document.body.classList.add('ar-passthrough-active');
+
+    if (openArBtn) openArBtn.classList.add('hidden');
+    if (exitArBtn) exitArBtn.classList.remove('hidden');
+    if (secondaryNativeBtn) secondaryNativeBtn.classList.remove('hidden');
+
+    this.syncRendererViewportAndClear();
+    this.applyARMetricScaleAndCamera(activeDish);
+    this.updateARCalibratorUI(activeDish);
+    this.syncRendererViewportAndClear();
+
+    if (activeDish) {
+      const { anchoCm, altoCm } = this.getDishRealDimensions(activeDish);
+      this.showToast(`AR 1:1 Activo · ⌀ ${anchoCm}×${altoCm} cm (Ajuste fino: − / 1:1 / +)`);
+    }
+
+    // 2. Solicitar stream de cámara trasera en paralelo con timeout de seguridad para no congelar nunca la UI
     if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
-      this.showToast('La cámara requiere conexión HTTPS. Abriendo visor AR secundario...');
-      const arModal = document.getElementById('ar-modal');
-      if (arModal) arModal.classList.remove('hidden');
       return;
     }
 
-    try {
-      // 1. Ocultar inmediatamente el modelo a escala de estudio y limpiar buffers para evitar cualquier flash gigante
-      if (this.currentModel) {
-        this.currentModel.visible = false;
-      }
-      this.disposeDimensionsGuide();
-      this.syncRendererViewportAndClear();
+    const requestCameraWithTimeout = (constraints, timeoutMs = 4000) =>
+      Promise.race([
+        navigator.mediaDevices.getUserMedia(constraints),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('CAMERA_TIMEOUT')), timeoutMs)
+        )
+      ]);
 
+    try {
       let stream = null;
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
+        stream = await requestCameraWithTimeout({
           video: {
             facingMode: { ideal: 'environment' },
             width: { ideal: 1280 },
@@ -1645,46 +1665,33 @@ export class Menu3DApp {
           audio: false
         });
       } catch (_) {
-        stream = await navigator.mediaDevices.getUserMedia({
+        stream = await requestCameraWithTimeout({
           video: true,
           audio: false
         });
       }
 
-      this.arMediaStream = stream;
-      this.isARPassthroughActive = true;
-      this.arUserScaleFactor = 1.0;
+      // Si el usuario pulsó "Salir de AR" mientras la cámara abría, apagar tracks de inmediato
+      if (!this.isARPassthroughActive) {
+        if (stream) {
+          stream.getTracks().forEach((track) => {
+            try {
+              track.stop();
+            } catch (_) {}
+          });
+        }
+        return;
+      }
 
-      if (videoEl) {
+      this.arMediaStream = stream;
+      if (videoEl && stream) {
         videoEl.srcObject = stream;
         videoEl.classList.remove('hidden');
-        await videoEl.play().catch(() => {});
+        videoEl.play().catch(() => {});
       }
-
-      document.body.classList.add('ar-passthrough-active');
-
-      if (openArBtn) openArBtn.classList.add('hidden');
-      if (exitArBtn) exitArBtn.classList.remove('hidden');
-      if (secondaryNativeBtn) secondaryNativeBtn.classList.remove('hidden');
-
-      // 2. Sincronizar tamaño exacto del contenedor 72dvh y aplicar escala 1:1 antes de mostrar el modelo
       this.syncRendererViewportAndClear();
-      this.applyARMetricScaleAndCamera(activeDish);
-      this.updateARCalibratorUI(activeDish);
-      this.syncRendererViewportAndClear();
-
-      if (activeDish) {
-        const { anchoCm, altoCm } = this.getDishRealDimensions(activeDish);
-        this.showToast(`AR 1:1 en mesa · ⌀ ${anchoCm}×${altoCm} cm`);
-      }
     } catch (err) {
-      console.error('[AR Passthrough] Error accediendo a la cámara:', err);
-      if (this.currentModel) {
-        this.applyStudioNormalizedScale(activeDish);
-      }
-      this.showToast('Permiso de cámara no disponible. Mostrando visor AR alternativo.');
-      const arModal = document.getElementById('ar-modal');
-      if (arModal) arModal.classList.remove('hidden');
+      console.warn('[AR Passthrough] Cámara no disponible o tardó; manteniendo plato 3D 1:1 interactivo:', err);
     }
   }
 
@@ -1754,10 +1761,20 @@ export class Menu3DApp {
   }
 
   /**
-   * Detiene los tracks de video de la cámara (`track.stop()`), limpia buffers WebGL,
-   * restaura el FOV de estudio (42°), reactiva el zoom manual y devuelve el plato a su escala de estudio.
+   * Detiene limpiamente los tracks de video de la cámara (`track.stop()`), finaliza sesión WebXR si existe,
+   * limpia buffers WebGL, restaura el FOV de estudio (42°), reactiva el zoom manual y devuelve el plato a su escala de estudio.
    */
   stopARPassthroughMode() {
+    this.isARPassthroughActive = false;
+    this.arUserScaleFactor = 1.0;
+    this.setLoading(false);
+
+    if (this.xrSession) {
+      const activeXr = this.xrSession;
+      this.xrSession = null;
+      activeXr.end().catch(() => {});
+    }
+
     if (this.currentModel) {
       this.currentModel.visible = false;
     }
@@ -1774,13 +1791,18 @@ export class Menu3DApp {
 
     const videoEl = this.arVideoElement || document.getElementById('ar-camera-feed');
     if (videoEl) {
+      if (videoEl.srcObject && typeof videoEl.srcObject.getTracks === 'function') {
+        videoEl.srcObject.getTracks().forEach((track) => {
+          try {
+            track.stop();
+          } catch (_) {}
+        });
+      }
       videoEl.pause();
       videoEl.srcObject = null;
       videoEl.classList.add('hidden');
     }
 
-    this.isARPassthroughActive = false;
-    this.arUserScaleFactor = 1.0;
     document.body.classList.remove('ar-passthrough-active');
 
     const openArBtn = document.getElementById('open-ar-btn');
@@ -2159,6 +2181,62 @@ export class Menu3DApp {
   }
 
   /**
+   * Renderiza las píldoras de selección rápida de Cuenta Dividida / Familia en la tarjeta del plato.
+   */
+  renderSubAccountPills() {
+    const container = document.getElementById('dish-subaccount-pills');
+    if (!container) return;
+
+    if (!Array.isArray(this.subAccounts) || this.subAccounts.length === 0) {
+      this.subAccounts = ['Cuenta 1 (Familia A)', 'Cuenta 2 (Familia B)'];
+    }
+    if (!this.subAccounts.includes(this.activeSubAccount)) {
+      this.activeSubAccount = this.subAccounts[0];
+    }
+
+    container.innerHTML = '';
+    this.subAccounts.forEach((accName) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      const isActive = accName === this.activeSubAccount;
+      btn.className = `subaccount-pill ${isActive ? 'active' : ''}`;
+      btn.setAttribute('role', 'radio');
+      btn.setAttribute('aria-checked', String(isActive));
+      btn.textContent = accName;
+      btn.addEventListener('click', () => {
+        this.activeSubAccount = accName;
+        this.saveCartToSession();
+        this.renderSubAccountPills();
+      });
+      container.appendChild(btn);
+    });
+  }
+
+  /**
+   * Crea una nueva Cuenta / Familia dentro de la misma mesa (ej. Cuenta 3 (Familia C) o nombre personalizado).
+   */
+  createNewSubAccount() {
+    const nextIdx = (this.subAccounts ? this.subAccounts.length : 0) + 1;
+    const letter = String.fromCharCode(64 + Math.min(nextIdx, 26));
+    const defaultName = `Cuenta ${nextIdx} (Familia ${letter})`;
+    const custom = window.prompt(
+      'Nombre de la nueva Cuenta o Familia en esta mesa:',
+      defaultName
+    );
+    const cleanName = (custom !== null ? custom.trim() : '') || defaultName;
+    if (custom === null) return;
+
+    if (!this.subAccounts.includes(cleanName)) {
+      this.subAccounts.push(cleanName);
+    }
+    this.activeSubAccount = cleanName;
+    this.saveCartToSession();
+    this.renderSubAccountPills();
+    this.renderCartState();
+    this.showToast(`✓ Activa: ${cleanName}`);
+  }
+
+  /**
    * Actualiza los textos del plato seleccionado, opciones interactivas, tabla nutricional y metadatos AR.
    */
   updateDishUI(dish) {
@@ -2166,8 +2244,9 @@ export class Menu3DApp {
     document.getElementById('dish-title').textContent = dish.nombre;
     document.getElementById('dish-description').textContent = dish.descripcion;
 
-    // Renderizar selectores de variantes y calcular precio dinámico
+    // Renderizar selectores de variantes, cuentas divididas y calcular precio dinámico
     this.renderDishOptions(dish);
+    this.renderSubAccountPills();
     this.updateDynamicPriceUI(dish);
 
     // Panel nutricional y dimensiones reales 1:1
@@ -2200,7 +2279,7 @@ export class Menu3DApp {
   }
 
   /**
-   * Añade el plato actual con sus opciones y extras seleccionados al carrito.
+   * Añade el plato actual con sus opciones, extras y Cuenta/Familia seleccionada al carrito.
    */
   addConfiguredCurrentDishToCart() {
     if (!this.currentDish) return;
@@ -2214,7 +2293,8 @@ export class Menu3DApp {
       nombreCompleto
     } = this.getConfiguredDishSummary(dish);
 
-    const cartKey = `${dish.id}::${signature}`;
+    const subcuenta = this.activeSubAccount || 'Cuenta 1 (Familia A)';
+    const cartKey = `${dish.id}::${signature}::${subcuenta}`;
     const existing = this.cart.get(cartKey);
 
     if (existing) {
@@ -2223,6 +2303,8 @@ export class Menu3DApp {
       this.cart.set(cartKey, {
         cartKey,
         dishId: dish.id,
+        signature,
+        subcuenta,
         nombreBase: dish.nombre,
         nombre: nombreCompleto,
         resumenOpciones,
@@ -2234,7 +2316,38 @@ export class Menu3DApp {
 
     this.saveCartToSession();
     this.renderCartState();
-    this.showToast(`✓ ${nombreCompleto} añadido a tu comanda`);
+    this.showToast(`✓ ${nombreCompleto} añadido a ${subcuenta}`);
+  }
+
+  /**
+   * Reasigna un ítem del carrito a otra Cuenta / Familia dentro de la misma mesa.
+   */
+  changeCartItemSubAccount(oldKey, newSubAccount) {
+    const existing = this.cart.get(oldKey);
+    if (!existing || !newSubAccount || existing.subcuenta === newSubAccount) return;
+
+    if (!this.subAccounts.includes(newSubAccount)) {
+      this.subAccounts.push(newSubAccount);
+    }
+
+    const sig = existing.signature || 'base';
+    const newKey = `${existing.dishId}::${sig}::${newSubAccount}`;
+    this.cart.delete(oldKey);
+
+    const target = this.cart.get(newKey);
+    if (target) {
+      target.cantidad += existing.cantidad;
+    } else {
+      this.cart.set(newKey, {
+        ...existing,
+        cartKey: newKey,
+        subcuenta: newSubAccount
+      });
+    }
+
+    this.saveCartToSession();
+    this.renderSubAccountPills();
+    this.renderCartState();
   }
 
   /**
@@ -2256,38 +2369,56 @@ export class Menu3DApp {
   }
 
   /**
-   * Guarda el carrito actual (incluyendo opciones personalizadas) en sessionStorage.
+   * Guarda el carrito actual (incluyendo subcuentas/familias) en sessionStorage.
    */
   saveCartToSession() {
     try {
-      const serialized = Array.from(this.cart.values());
-      sessionStorage.setItem(CART_SESSION_KEY, JSON.stringify(serialized));
+      const payload = {
+        items: Array.from(this.cart.values()),
+        subAccounts: this.subAccounts,
+        activeSubAccount: this.activeSubAccount
+      };
+      sessionStorage.setItem(CART_SESSION_KEY, JSON.stringify(payload));
     } catch (err) {
       console.warn('No se pudo guardar el carrito en sessionStorage:', err);
     }
   }
 
   /**
-   * Restaura el carrito desde sessionStorage tras recargar la página.
+   * Restaura el carrito y las subcuentas desde sessionStorage tras recargar la página.
    */
   restoreCartFromSession() {
     try {
       const raw = sessionStorage.getItem(CART_SESSION_KEY);
       if (!raw) return;
-      const items = JSON.parse(raw);
-      if (!Array.isArray(items)) return;
+      const parsed = JSON.parse(raw);
+      const items = Array.isArray(parsed) ? parsed : (parsed && parsed.items) || [];
+
+      if (parsed && Array.isArray(parsed.subAccounts) && parsed.subAccounts.length > 0) {
+        this.subAccounts = parsed.subAccounts;
+      }
+      if (parsed && parsed.activeSubAccount) {
+        this.activeSubAccount = parsed.activeSubAccount;
+      }
 
       this.cart.clear();
       items.forEach((entry) => {
         if (entry && entry.cartKey && entry.cantidad > 0) {
-          this.cart.set(entry.cartKey, entry);
+          const subcuenta = entry.subcuenta || 'Cuenta 1 (Familia A)';
+          if (!this.subAccounts.includes(subcuenta)) {
+            this.subAccounts.push(subcuenta);
+          }
+          this.cart.set(entry.cartKey, { ...entry, subcuenta });
         } else if (entry && entry.dishId && entry.cantidad > 0) {
           const dish = this.dishes.find((d) => d.id === entry.dishId);
           if (dish) {
-            const key = `${dish.id}::base`;
+            const subcuenta = entry.subcuenta || 'Cuenta 1 (Familia A)';
+            const key = `${dish.id}::base::${subcuenta}`;
             this.cart.set(key, {
               cartKey: key,
               dishId: dish.id,
+              signature: 'base',
+              subcuenta,
               nombreBase: dish.nombre,
               nombre: dish.nombre,
               resumenOpciones: '',
@@ -2298,6 +2429,7 @@ export class Menu3DApp {
           }
         }
       });
+      this.renderSubAccountPills();
       this.renderCartState();
     } catch (err) {
       console.warn('No se pudo restaurar el carrito desde sessionStorage:', err);
@@ -2324,14 +2456,27 @@ export class Menu3DApp {
     let totalItems = 0;
     let totalAmount = 0;
     const itemsPayload = [];
+    const subAccountMap = new Map();
 
     this.cart.forEach((entry) => {
       totalItems += entry.cantidad;
       const subtotal = Number((entry.precioUnitario * entry.cantidad).toFixed(2));
       totalAmount += subtotal;
+      const subcuenta = entry.subcuenta || 'Cuenta 1 (Familia A)';
+
+      const accStat = subAccountMap.get(subcuenta) || {
+        nombre: subcuenta,
+        subtotal: 0,
+        cantidadItems: 0
+      };
+      accStat.subtotal = Number((accStat.subtotal + subtotal).toFixed(2));
+      accStat.cantidadItems += entry.cantidad;
+      subAccountMap.set(subcuenta, accStat);
+
       itemsPayload.push({
         id: entry.dishId,
         cartKey: entry.cartKey,
+        subcuenta,
         nombreBase: entry.nombreBase,
         nombre: entry.nombre,
         resumenOpciones: entry.resumenOpciones || '',
@@ -2342,27 +2487,68 @@ export class Menu3DApp {
       });
     });
 
+    const cuentasDivididas = Array.from(subAccountMap.values());
+
     return {
       totalItems,
       totalAmount: Number(totalAmount.toFixed(2)),
-      itemsPayload
+      itemsPayload,
+      cuentasDivididas
     };
   }
 
   renderCartState() {
-    const { totalItems, totalAmount } = this.getCartTotals();
+    const { totalItems, totalAmount, cuentasDivididas } = this.getCartTotals();
     document.getElementById('cart-count').textContent = String(totalItems);
     document.getElementById('order-total-amount').textContent = this.formatGuaranies(totalAmount);
 
     const listEl = document.getElementById('order-items-list');
+    const splitSummaryEl = document.getElementById('split-accounts-summary');
     if (!listEl) return;
 
     listEl.innerHTML = '';
+    if (splitSummaryEl) {
+      if (cuentasDivididas.length === 0) {
+        splitSummaryEl.innerHTML = `
+          <div class="split-accounts-header">
+            <span>Cuentas Divididas en Mesa</span>
+            <button type="button" id="modal-add-subaccount-btn" class="subaccount-add-btn">+ Nueva Cuenta / Familia</button>
+          </div>
+          <div class="split-account-row">
+            <span>Sin consumos cargados aún</span>
+            <strong>Gs. 0</strong>
+          </div>
+        `;
+      } else {
+        const rowsHtml = cuentasDivididas
+          .map(
+            (acc) => `
+            <div class="split-account-row">
+              <span>${acc.nombre} <small>(${acc.cantidadItems} ítem${acc.cantidadItems === 1 ? '' : 's'})</small></span>
+              <strong>${this.formatGuaranies(acc.subtotal)}</strong>
+            </div>
+          `
+          )
+          .join('');
+        splitSummaryEl.innerHTML = `
+          <div class="split-accounts-header">
+            <span>Subtotales por Cuenta / Familia</span>
+            <button type="button" id="modal-add-subaccount-btn" class="subaccount-add-btn">+ Nueva Cuenta / Familia</button>
+          </div>
+          ${rowsHtml}
+        `;
+      }
+      const modalAddAccBtn = document.getElementById('modal-add-subaccount-btn');
+      if (modalAddAccBtn) {
+        modalAddAccBtn.addEventListener('click', () => this.createNewSubAccount());
+      }
+    }
+
     if (this.cart.size === 0) {
       listEl.innerHTML = `
         <div class="order-empty-msg">
           Aún no has añadido platos a tu comanda.<br/>
-          Personaliza tu plato y pulsa <strong>"+ Añadir a comanda"</strong>.
+          Elige la Cuenta/Familia, personaliza tu plato y pulsa <strong>"+ Añadir a comanda"</strong>.
         </div>
       `;
       return;
@@ -2375,10 +2561,24 @@ export class Menu3DApp {
         ? `<span class="order-item-options">${entry.resumenOpciones}</span>`
         : '';
 
+      const currentSub = entry.subcuenta || 'Cuenta 1 (Familia A)';
+      const selectOptions = this.subAccounts
+        .map(
+          (acc) =>
+            `<option value="${acc}" ${acc === currentSub ? 'selected' : ''}>${acc}</option>`
+        )
+        .join('');
+
       row.innerHTML = `
         <div class="order-item-info">
           <span class="order-item-name">${entry.nombreBase || entry.nombre}</span>
           ${optionsLine}
+          <div class="item-subaccount-row">
+            <span class="item-subaccount-label">Cuenta:</span>
+            <select class="item-subaccount-select" aria-label="Asignar ítem a cuenta o familia">
+              ${selectOptions}
+            </select>
+          </div>
           <span class="order-item-sub">${this.formatGuaranies(entry.precioUnitario)} × ${entry.cantidad} = ${this.formatGuaranies(entry.precioUnitario * entry.cantidad)}</span>
         </div>
         <div class="order-qty-controls">
@@ -2387,6 +2587,13 @@ export class Menu3DApp {
           <button type="button" class="qty-btn" data-action="inc" aria-label="Sumar unidad">+</button>
         </div>
       `;
+
+      const selectEl = row.querySelector('.item-subaccount-select');
+      if (selectEl) {
+        selectEl.addEventListener('change', (e) => {
+          this.changeCartItemSubAccount(entry.cartKey, e.target.value);
+        });
+      }
 
       row.querySelector('[data-action="dec"]').addEventListener('click', () => {
         this.updateCartEntryByKey(entry.cartKey, -1);
@@ -2402,9 +2609,10 @@ export class Menu3DApp {
   /**
    * Emite una comanda o llamado al mesero en tiempo real a través de BroadcastChannel,
    * persiste en localStorage para sincronización entre pestañas y despacha por WS si está activo.
+   * Incluye el desglose de Cuentas Divididas (`cuentasDivididas`) y `subcuenta` por ítem.
    */
   dispatchRealtimeEvent(tipo = 'COMANDA') {
-    const { itemsPayload, totalAmount } = this.getCartTotals();
+    const { itemsPayload, totalAmount, cuentasDivididas } = this.getCartTotals();
 
     if (tipo === 'COMANDA' && itemsPayload.length === 0) {
       this.showToast('Añade al menos un plato antes de enviar la comanda');
@@ -2423,6 +2631,7 @@ export class Menu3DApp {
           ? [
               {
                 id: 'asistencia',
+                subcuenta: this.activeSubAccount || 'Cuenta 1 (Familia A)',
                 nombreBase: 'Solicitud de atención en mesa',
                 nombre: 'Solicitud de atención en mesa',
                 resumenOpciones: '',
@@ -2433,9 +2642,13 @@ export class Menu3DApp {
               }
             ]
           : itemsPayload,
+      cuentasDivididas:
+        tipo === 'LLAMADO_MESERO' && itemsPayload.length === 0 ? [] : cuentasDivididas,
       total: tipo === 'LLAMADO_MESERO' && itemsPayload.length === 0 ? 0 : totalAmount,
       timestamp: new Date().toISOString(),
-      estado: 'Pendiente'
+      estado: 'Pendiente',
+      verificadoCaja: false,
+      montoCorroborado: null
     };
 
     this.lastOrderId = orderPayload.id;
@@ -2485,15 +2698,22 @@ export class Menu3DApp {
     const statusBox = document.getElementById('live-order-status');
     if (!statusBox) return;
 
+    const splitText =
+      Array.isArray(order.cuentasDivididas) && order.cuentasDivididas.length > 0
+        ? ` · ${order.cuentasDivididas
+            .map((c) => `${c.nombre}: ${this.formatGuaranies(c.subtotal)}`)
+            .join(' | ')}`
+        : '';
+
     statusBox.classList.remove('hidden');
     statusBox.innerHTML = `
       <div><strong>Último envío (${order.id}):</strong> Estado actual → <span>${order.estado}</span></div>
-      <small>Sector: ${order.sector} · Mesa ${order.mesa} · Mesero: ${order.mesero_id}</small>
+      <small>Sector: ${order.sector} · Mesa ${order.mesa} · Mesero: ${order.mesero_id}${splitText}</small>
     `;
   }
 
   /**
-   * Conecta los controles de UI: AR 1:1, Toggle "📏 Dimensiones", Nutrición, Carrito y Comanda.
+   * Conecta los controles de UI: AR 1:1 con prioridad táctil, Toggle "📏 Dimensiones", Cuentas Divididas, Nutrición, Carrito y Comanda.
    */
   bindUIEvents() {
     const nutritionPanel = document.getElementById('nutrition-panel');
@@ -2505,6 +2725,22 @@ export class Menu3DApp {
       arModal.classList.add('hidden');
       orderModal.classList.add('hidden');
     };
+
+    // Evitar que WebXR DOM Overlay intercepte toques sobre las barras de botones superiores e inferiores
+    document.querySelectorAll('.top-bar, .viewer-bottom-bar').forEach((hudEl) => {
+      hudEl.addEventListener('beforexrselect', (e) => {
+        e.preventDefault();
+      });
+    });
+
+    // Botón rápido para crear nueva Cuenta / Familia en la mesa
+    const addSubAccountQuickBtn = document.getElementById('add-subaccount-quick-btn');
+    if (addSubAccountQuickBtn) {
+      addSubAccountQuickBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        this.createNewSubAccount();
+      });
+    }
 
     // Toggle "📏 Dimensiones" en el visor 3D
     const toggleDimsBtn = document.getElementById('toggle-dimensions-btn');
@@ -2530,7 +2766,7 @@ export class Menu3DApp {
       nutritionPanel.classList.add('hidden');
     });
 
-    // Vista AR Escala Real 1:1 -> Detección automática WebXR Hit-Test o Cámara Passthrough con encuadre métrico automático
+    // Vista AR Escala Real 1:1 -> Arranque inmediato sin bloqueos
     const openArBtn = document.getElementById('open-ar-btn');
     if (openArBtn) {
       openArBtn.addEventListener('click', async (e) => {
@@ -2541,17 +2777,16 @@ export class Menu3DApp {
       });
     }
 
+    // Salida inmediata de AR con prioridad táctil (click + touchend)
     const exitArBtn = document.getElementById('exit-ar-btn');
     if (exitArBtn) {
-      exitArBtn.addEventListener('click', (e) => {
+      const handleExitAR = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        if (this.xrSession) {
-          this.xrSession.end().catch(() => {});
-        } else {
-          this.stopARPassthroughMode();
-        }
-      });
+        this.stopARPassthroughMode();
+      };
+      exitArBtn.addEventListener('click', handleExitAR);
+      exitArBtn.addEventListener('touchend', handleExitAR, { passive: false });
     }
 
     // Controles compactos de ajuste fino en modo AR (- / 1:1 / +)
@@ -2584,10 +2819,17 @@ export class Menu3DApp {
 
     const secondaryNativeArBtn = document.getElementById('secondary-native-ar-btn');
     if (secondaryNativeArBtn) {
-      secondaryNativeArBtn.addEventListener('click', (e) => {
+      secondaryNativeArBtn.addEventListener('click', async (e) => {
         e.preventDefault();
         e.stopPropagation();
         const modelViewer = document.getElementById('ar-model-viewer');
+        if (modelViewer && !modelViewer.getAttribute('src') && this.currentDish && this.currentModel) {
+          await this.prepareARModelSource(
+            this.currentDish,
+            this.currentModel,
+            this.currentModelCameFromGLB
+          ).catch(() => {});
+        }
         arModal.classList.remove('hidden');
         if (modelViewer && typeof modelViewer.activateAR === 'function') {
           try {
@@ -2601,8 +2843,15 @@ export class Menu3DApp {
       arModal.classList.add('hidden');
     });
 
-    document.getElementById('trigger-native-ar-btn').addEventListener('click', () => {
+    document.getElementById('trigger-native-ar-btn').addEventListener('click', async () => {
       const modelViewer = document.getElementById('ar-model-viewer');
+      if (modelViewer && !modelViewer.getAttribute('src') && this.currentDish && this.currentModel) {
+        await this.prepareARModelSource(
+          this.currentDish,
+          this.currentModel,
+          this.currentModelCameFromGLB
+        ).catch(() => {});
+      }
       if (modelViewer && typeof modelViewer.activateAR === 'function') {
         try {
           modelViewer.activateAR();
