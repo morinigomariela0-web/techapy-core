@@ -83,16 +83,24 @@ export class Menu3DApp {
       document.body.classList.add('perf-lite');
     }
 
-    this.initScene();
-    this.initLights();
-    this.initContactShadow();
-    this.initLoaders();
-    this.initRealtimeComandaBus();
+    // 1. Vincular eventos de botones, contexto de mesa y bus de comanda PRIMERO (sin depender de WebGL)
     this.bindUIEvents();
     this.syncSessionContextUI();
+    this.initRealtimeComandaBus();
+
+    // 2. Inicializar escena 3D y cargadores de forma resiliente
+    try {
+      this.initScene();
+      this.initLights();
+      this.initContactShadow();
+      this.initLoaders();
+      this.animate();
+    } catch (sceneErr) {
+      console.error('[TechaPY 3D] Error inicializando escena WebGL:', sceneErr);
+    }
+
     this.checkWebXRHitTestSupport();
     this.loadMenuData();
-    this.animate();
   }
 
   /**
@@ -951,35 +959,163 @@ export class Menu3DApp {
   }
 
   /**
-   * Extrae las dimensiones físicas reales del plato en centímetros y metros (escala 1:1).
-   * Soporta `diametro_cm`, `diametroCm`, `dimensiones.anchoCm`, `dimensiones_cm.diametro`,
-   * o las dimensiones nativas en metros de un `.glb` escaneado con LiDAR (fallback a 24 cm = 0.24 m).
+   * Extrae de forma unificada las dimensiones físicas reales del plato en centímetros y las convierte a metros (`1 cm = 0.01 m`).
+   * Soporta `dimensiones`, `dimensiones_cm`, `diametroCm`, `diametro_cm`, `anchoCm`, `ancho_cm`, `largoCm`, `largo_cm`,
+   * `altoCm`, `alto_cm`, `alturaCm`, `altura_cm`, `dimensiones_reales`, `escala_ar_metros`, o el bounding box real del `.glb`.
    */
-  getDishRealDimensions(dish = this.currentDish) {
+  getDishRealDimensions(dish = this.currentDish, modelGroup = this.currentModel) {
     const d = dish || {};
     const dimsObj = d.dimensiones || d.dimensiones_cm || {};
-    const anchoCm =
-      Number(d.diametro_cm) ||
-      Number(d.diametroCm) ||
+
+    let parsedTextWidthCm = 0;
+    let parsedTextHeightCm = 0;
+    if (typeof d.dimensiones_reales === 'string') {
+      const nums = d.dimensiones_reales.match(/\d+(?:[.,]\d+)?/g);
+      if (nums && nums.length >= 1) {
+        parsedTextWidthCm = parseFloat(nums[0].replace(',', '.')) || 0;
+      }
+      if (nums && nums.length >= 2) {
+        parsedTextHeightCm = parseFloat(nums[1].replace(',', '.')) || 0;
+      }
+    }
+
+    const arRadiusMeters = Number(d.escala_ar_metros) || 0;
+    const fromArRadiusCm = arRadiusMeters > 0 ? Math.round(arRadiusMeters * 200) : 0;
+
+    let glbIntrinsicWidthCm = 0;
+    let glbIntrinsicHeightCm = 0;
+    if (modelGroup && modelGroup.userData && modelGroup.userData.intrinsicMetrics) {
+      const { rawSpan, rawHeight } = modelGroup.userData.intrinsicMetrics;
+      if (rawSpan >= 0.08 && rawSpan <= 0.65) {
+        glbIntrinsicWidthCm = Math.round(rawSpan * 100);
+      }
+      if (rawHeight >= 0.02 && rawHeight <= 0.45) {
+        glbIntrinsicHeightCm = Math.round(rawHeight * 100);
+      }
+    }
+
+    const rawWidthVal =
+      Number(dimsObj.diametroCm) ||
       Number(dimsObj.anchoCm) ||
       Number(dimsObj.diametro) ||
+      Number(dimsObj.ancho) ||
+      Number(d.diametroCm) ||
+      Number(d.diametro_cm) ||
+      Number(d.anchoCm) ||
+      Number(d.ancho_cm) ||
+      parsedTextWidthCm ||
+      fromArRadiusCm ||
+      glbIntrinsicWidthCm ||
       24;
-    const altoCm =
-      Number(d.altura_cm) ||
-      Number(d.alturaCm) ||
+
+    const rawDepthVal =
+      Number(dimsObj.largoCm) ||
+      Number(dimsObj.largo) ||
+      Number(d.largoCm) ||
+      Number(d.largo_cm) ||
+      rawWidthVal;
+
+    const rawHeightVal =
       Number(dimsObj.altoCm) ||
+      Number(dimsObj.alturaCm) ||
+      Number(dimsObj.alto) ||
       Number(dimsObj.altura) ||
+      Number(d.altoCm) ||
+      Number(d.alto_cm) ||
+      Number(d.alturaCm) ||
+      Number(d.altura_cm) ||
+      parsedTextHeightCm ||
+      glbIntrinsicHeightCm ||
       6;
 
-    const widthMeters = THREE.MathUtils.clamp(anchoCm / 100, 0.08, 0.65);
-    const heightMeters = THREE.MathUtils.clamp(altoCm / 100, 0.02, 0.45);
+    // Si algún campo vino expresado directamente en metros (ej. 0.24), convertir a centímetros (24 cm)
+    const anchoCm = Number((rawWidthVal < 1.5 ? rawWidthVal * 100 : rawWidthVal).toFixed(1));
+    const largoCm = Number((rawDepthVal < 1.5 ? rawDepthVal * 100 : rawDepthVal).toFixed(1));
+    const altoCm = Number((rawHeightVal < 1.0 ? rawHeightVal * 100 : rawHeightVal).toFixed(1));
+
+    const widthMeters = Number(THREE.MathUtils.clamp(anchoCm * 0.01, 0.08, 0.65).toFixed(4));
+    const depthMeters = Number(THREE.MathUtils.clamp(largoCm * 0.01, 0.08, 0.65).toFixed(4));
+    const heightMeters = Number(THREE.MathUtils.clamp(altoCm * 0.01, 0.02, 0.45).toFixed(4));
 
     return {
+      diametroCm: anchoCm,
       anchoCm,
+      largoCm,
       altoCm,
       widthMeters,
+      depthMeters,
       heightMeters
     };
+  }
+
+  /**
+   * Calcula y muestra en vivo en la interfaz las medidas reales detectadas del plato (cm y m)
+   * y la distancia/escala aplicada sobre la mesa para que el usuario las verifique en todo momento.
+   */
+  updateLiveMetricsUI(dish = this.currentDish) {
+    if (!dish) return;
+
+    const { anchoCm, largoCm, altoCm, widthMeters, heightMeters } = this.getDishRealDimensions(dish);
+    const scaleFactor = Number(this.arUserScaleFactor || 1.0);
+    const scalePct = Math.round(scaleFactor * 100);
+    const isBaseScale = Math.abs(scaleFactor - 1.0) < 0.01;
+    const scaleLabel = isBaseScale ? 'Escala 1:1 (100%)' : `Escala ${scalePct}%`;
+
+    const effectiveWidthCm = Number((anchoCm * scaleFactor).toFixed(1));
+    const effectiveHeightCm = Number((altoCm * scaleFactor).toFixed(1));
+    const effectiveWidthM = Number((widthMeters * scaleFactor).toFixed(2));
+    const effectiveHeightM = Number((heightMeters * scaleFactor).toFixed(2));
+
+    let tableDistMeters = this.computeAutoARPassthroughDistance(dish);
+    if (this.xrSession && this.lastXrHitPosition && this.camera) {
+      const xrDist = this.camera.position.distanceTo(this.lastXrHitPosition);
+      if (Number.isFinite(xrDist) && xrDist > 0.1) {
+        tableDistMeters = Number(xrDist.toFixed(3));
+      }
+    }
+    this.arViewingDistanceMeters = tableDistMeters;
+    const tableDistCm = Math.round(tableDistMeters * 100);
+
+    const shapeLabelCm =
+      Math.abs(anchoCm - largoCm) > 0.5
+        ? `${anchoCm}×${largoCm} cm · Alto ${altoCm} cm`
+        : `⌀ ${anchoCm} cm × Alto ${altoCm} cm`;
+
+    const hudText = document.getElementById('dimensions-hud-text');
+    const hudBadge = document.getElementById('dimensions-hud-badge');
+    if (hudText) {
+      hudText.textContent = isBaseScale
+        ? `${shapeLabelCm} (${widthMeters.toFixed(2)} m) · Mesa: ${tableDistCm} cm · 1:1`
+        : `⌀ ${effectiveWidthCm}×${effectiveHeightCm} cm (${effectiveWidthM} m) · Mesa: ${tableDistCm} cm · ${scalePct}%`;
+    }
+    if (hudBadge) {
+      hudBadge.classList.remove('hidden');
+    }
+
+    const cmLabel = document.getElementById('dish-metric-cm-label');
+    if (cmLabel) {
+      cmLabel.textContent = shapeLabelCm;
+    }
+
+    const mLabel = document.getElementById('dish-metric-m-label');
+    if (mLabel) {
+      mLabel.textContent = `(${widthMeters.toFixed(2)} m × ${heightMeters.toFixed(2)} m)`;
+    }
+
+    const distLabel = document.getElementById('dish-table-distance-label');
+    if (distLabel) {
+      distLabel.textContent = `Distancia mesa: ${tableDistCm} cm (${tableDistMeters.toFixed(2)} m) · ${scaleLabel}`;
+    }
+
+    const realDimsEl = document.getElementById('dish-real-dimensions');
+    if (realDimsEl) {
+      realDimsEl.textContent = `${shapeLabelCm} (${widthMeters.toFixed(2)} m × ${heightMeters.toFixed(2)} m) · Mesa a ${tableDistCm} cm`;
+    }
+
+    const arDims = document.getElementById('ar-dimensions-label');
+    if (arDims) {
+      arDims.textContent = `${shapeLabelCm} (${widthMeters.toFixed(2)} m) · Distancia mesa ${tableDistCm} cm`;
+    }
   }
 
   /**
@@ -1050,6 +1186,8 @@ export class Menu3DApp {
       this.contactShadow.scale.setScalar(studioTargetSpan / 2.08);
     }
 
+    this.updateLiveMetricsUI(dish);
+
     if (this.renderer && !this.xrSession) {
       this.renderer.clear(true, true, true);
     }
@@ -1057,7 +1195,7 @@ export class Menu3DApp {
 
   /**
    * Actualiza el control compacto de calibración AR (`#ar-scale-calibrator`) con la medida real del plato
-   * (ej. `⌀ 24×6 cm`) y el estado del botón `1:1`.
+   * (ej. `⌀ 24×6 cm · 52 cm`) y el estado del botón `1:1`.
    */
   updateARCalibratorUI(dish = this.currentDish) {
     const calibrator = document.getElementById('ar-scale-calibrator');
@@ -1070,12 +1208,15 @@ export class Menu3DApp {
     }
 
     if (measureEl && dish) {
-      const { anchoCm, altoCm } = this.getDishRealDimensions(dish);
-      const effectiveCm = Math.round(anchoCm * (this.arUserScaleFactor || 1.0));
+      const { anchoCm, altoCm, widthMeters } = this.getDishRealDimensions(dish);
+      const scaleFactor = Number(this.arUserScaleFactor || 1.0);
+      const effectiveCm = Number((anchoCm * scaleFactor).toFixed(1));
+      const effectiveM = Number((widthMeters * scaleFactor).toFixed(2));
+      const distCm = Math.round((this.arViewingDistanceMeters || this.computeAutoARPassthroughDistance(dish)) * 100);
       measureEl.textContent =
-        Math.abs((this.arUserScaleFactor || 1.0) - 1.0) < 0.01
-          ? `⌀ ${anchoCm}×${altoCm} cm`
-          : `⌀ ${effectiveCm} cm (base ${anchoCm} cm)`;
+        Math.abs(scaleFactor - 1.0) < 0.01
+          ? `⌀ ${anchoCm}×${altoCm} cm (${widthMeters.toFixed(2)} m) · Mesa ${distCm} cm`
+          : `⌀ ${effectiveCm} cm (${effectiveM} m) · Mesa ${distCm} cm`;
     }
 
     if (resetBtn) {
@@ -1083,6 +1224,8 @@ export class Menu3DApp {
       resetBtn.classList.toggle('active', isBase);
       resetBtn.textContent = isBase ? '1:1' : `${Math.round((this.arUserScaleFactor || 1.0) * 100)}%`;
     }
+
+    this.updateLiveMetricsUI(dish);
   }
 
   /**
@@ -1097,13 +1240,17 @@ export class Menu3DApp {
       this.arUserScaleFactor = Number(THREE.MathUtils.clamp(next, 0.52, 1.75).toFixed(2));
     }
 
-    this.normalizeModelToRealMetricMeters(this.currentDish);
-    if (this.xrSession && this.lastXrHitPose) {
-      this.anchorModelAtWebXRHitPose(this.lastXrHitPose);
+    if (this.isARPassthroughActive && !this.xrSession) {
+      this.applyARMetricScaleAndCamera(this.currentDish);
     } else {
-      this.updateDimensionsGuide(this.currentDish);
+      this.normalizeModelToRealMetricMeters(this.currentDish);
+      if (this.xrSession && this.lastXrHitPose) {
+        this.anchorModelAtWebXRHitPose(this.lastXrHitPose);
+      } else {
+        this.updateDimensionsGuide(this.currentDish);
+      }
+      this.updateARCalibratorUI(this.currentDish);
     }
-    this.updateARCalibratorUI(this.currentDish);
     this.syncRendererViewportAndClear();
   }
 
@@ -1114,19 +1261,15 @@ export class Menu3DApp {
   updateDimensionsGuide(dish = this.currentDish) {
     this.disposeDimensionsGuide();
 
-    const hudBadge = document.getElementById('dimensions-hud-badge');
-    const hudText = document.getElementById('dimensions-hud-text');
     const toggleBtn = document.getElementById('toggle-dimensions-btn');
 
     if (!dish) return;
 
     const { anchoCm: diamCm, altoCm: heightCm, widthMeters, heightMeters } = this.getDishRealDimensions(dish);
     const isAR = Boolean(this.isARPassthroughActive || this.xrSession);
-    const summaryLabel = `⌀ ${diamCm} cm · Altura ${heightCm} cm`;
 
-    if (hudText) hudText.textContent = summaryLabel;
-    // En modo AR ya se muestra el control #ar-scale-calibrator con las medidas en la izquierda, evitando duplicar badges
-    if (hudBadge) hudBadge.classList.toggle('hidden', !this.showDimensionsGuide || isAR);
+    this.updateLiveMetricsUI(dish);
+
     if (toggleBtn) {
       toggleBtn.classList.toggle('active', this.showDimensionsGuide);
       toggleBtn.setAttribute('aria-pressed', String(this.showDimensionsGuide));
@@ -1423,19 +1566,19 @@ export class Menu3DApp {
   }
 
   /**
-   * Calcula la distancia física constante de referencia de la cámara al centro de la mesa (`y = 0`)
-   * en modo AR Passthrough (`0.52 m` = `52 cm`, ampliándose suavemente solo si el plato supera los 38 cm).
-   * Al mantener una referencia física constante, un plato de 16 cm se ve más pequeño que uno de 24 cm
-   * y uno de 30 cm más grande, respetando el tamaño real 1:1 en todos los dispositivos.
+   * Calcula automáticamente la distancia física coherente de la cámara al centro del plato sobre la mesa (`y = 0`)
+   * a partir de las medidas reales del plato (`widthMeters`, `depthMeters`, `heightMeters`).
+   * Por ejemplo:
+   * - Plato ⌀ 24×6 cm (0.24 m) -> 0.521 m (52 cm)
+   * - Cuenco ⌀ 22×11 cm (0.22 m) -> 0.508 m (51 cm)
+   * - Postre ⌀ 20×6 cm (0.20 m) -> 0.479 m (48 cm)
+   * Al combinarse con `computeCalibratedARVerticalFov(autoDist)`, mantiene el encuadre físico 1:1 exacto (48 cm de mesa).
    */
   computeAutoARPassthroughDistance(dish = this.currentDish) {
-    const { widthMeters } = this.getDishRealDimensions(dish);
-    const effectiveWidth = widthMeters * (this.arUserScaleFactor || 1.0);
-    // Distancia ergonómica real del teléfono a la mesa: 52 cm (0.52 m)
-    if (effectiveWidth > 0.38) {
-      return Number(THREE.MathUtils.clamp(0.52 * (effectiveWidth / 0.36), 0.52, 0.88).toFixed(4));
-    }
-    return 0.52;
+    const { widthMeters, depthMeters, heightMeters } = this.getDishRealDimensions(dish);
+    const maxPlanSpan = Math.max(widthMeters, depthMeters);
+    const coherentDist = 0.26 + maxPlanSpan * 1.05 + heightMeters * 0.15;
+    return Number(THREE.MathUtils.clamp(coherentDist, 0.36, 0.88).toFixed(3));
   }
 
   /**
@@ -1600,10 +1743,12 @@ export class Menu3DApp {
   }
 
   /**
-   * Activa el Modo Cámara Directa (AR Passthrough 1:1) sin salto gigante ni residuos visuales:
-   * - Oculta el modelo de estudio y limpia los buffers WebGL antes de cambiar dimensiones del contenedor.
-   * - Enciende la cámara trasera (`facingMode: 'environment'`) detrás del canvas transparente (`alpha: true`).
-   * - Aplica la escala métrica 1:1 universal y posiciona la cámara antes de volver a hacer visible el plato.
+   * Activa el Modo AR Escala Real 1:1 de forma inmediata y sin bloqueos:
+   * - Entra sincrónicamente al estado AR 1:1 (proyectando el modelo 3D real del plato en metros sobre `y = 0`
+   *   a la distancia calculada de la mesa y habilitando al instante los botones `Salir de AR`, `−`, `1:1`, `+`).
+   * - Solicita en paralelo el stream de cámara trasera (`facingMode: 'environment'`); si la cámara responde,
+   *   la muestra detrás del canvas transparente (`alpha: true`); si no hay cámara (ej. en PC o sin permiso),
+   *   mantiene la proyección 3D 1:1 interactiva sobre la escena sin bloquear la interfaz.
    */
   async startARPassthroughMode() {
     if (this.isARPassthroughActive) {
@@ -1623,24 +1768,46 @@ export class Menu3DApp {
     const exitArBtn = document.getElementById('exit-ar-btn');
     const secondaryNativeBtn = document.getElementById('secondary-native-ar-btn');
 
+    // 1. Ocultar el modelo de estudio y activar de inmediato el modo AR 1:1 sobre la mesa (sin esperar a getUserMedia)
+    if (this.currentModel) {
+      this.currentModel.visible = false;
+    }
+    this.disposeDimensionsGuide();
+
+    this.isARPassthroughActive = true;
+    this.arUserScaleFactor = 1.0;
+    document.body.classList.add('ar-passthrough-active');
+
+    if (openArBtn) openArBtn.classList.add('hidden');
+    if (exitArBtn) exitArBtn.classList.remove('hidden');
+    if (secondaryNativeBtn) secondaryNativeBtn.classList.remove('hidden');
+
+    this.syncRendererViewportAndClear();
+    this.applyARMetricScaleAndCamera(activeDish);
+    this.updateARCalibratorUI(activeDish);
+    this.syncRendererViewportAndClear();
+
+    const { anchoCm, altoCm, widthMeters } = this.getDishRealDimensions(activeDish);
+    const distCm = Math.round((this.arViewingDistanceMeters || this.computeAutoARPassthroughDistance(activeDish)) * 100);
+
+    // 2. Intentar encender la cámara trasera en segundo plano con timeout de seguridad de 3.5s
     if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
-      this.showToast('La cámara requiere conexión HTTPS. Abriendo visor AR secundario...');
-      const arModal = document.getElementById('ar-modal');
-      if (arModal) arModal.classList.remove('hidden');
+      this.showToast(`AR 1:1 en mesa · ⌀ ${anchoCm}×${altoCm} cm (${widthMeters.toFixed(2)} m) · Distancia ${distCm} cm`);
       return;
     }
 
     try {
-      // 1. Ocultar inmediatamente el modelo a escala de estudio y limpiar buffers para evitar cualquier flash gigante
-      if (this.currentModel) {
-        this.currentModel.visible = false;
-      }
-      this.disposeDimensionsGuide();
-      this.syncRendererViewportAndClear();
+      const getCameraWithTimeout = (constraints, timeoutMs = 3500) =>
+        Promise.race([
+          navigator.mediaDevices.getUserMedia(constraints),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('CAMERA_TIMEOUT')), timeoutMs)
+          )
+        ]);
 
       let stream = null;
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
+        stream = await getCameraWithTimeout({
           video: {
             facingMode: { ideal: 'environment' },
             width: { ideal: 1280 },
@@ -1649,46 +1816,38 @@ export class Menu3DApp {
           audio: false
         });
       } catch (_) {
-        stream = await navigator.mediaDevices.getUserMedia({
+        stream = await getCameraWithTimeout({
           video: true,
           audio: false
         });
       }
 
-      this.arMediaStream = stream;
-      this.isARPassthroughActive = true;
-      this.arUserScaleFactor = 1.0;
+      // Si el usuario pulsó "Salir de AR" mientras la cámara abría, detener el stream de inmediato
+      if (!this.isARPassthroughActive) {
+        stream.getTracks().forEach((t) => {
+          try {
+            t.stop();
+          } catch (_) {}
+        });
+        return;
+      }
 
+      this.arMediaStream = stream;
       if (videoEl) {
         videoEl.srcObject = stream;
         videoEl.classList.remove('hidden');
         await videoEl.play().catch(() => {});
       }
 
-      document.body.classList.add('ar-passthrough-active');
-
-      if (openArBtn) openArBtn.classList.add('hidden');
-      if (exitArBtn) exitArBtn.classList.remove('hidden');
-      if (secondaryNativeBtn) secondaryNativeBtn.classList.remove('hidden');
-
-      // 2. Sincronizar tamaño exacto del contenedor 72dvh y aplicar escala 1:1 antes de mostrar el modelo
       this.syncRendererViewportAndClear();
       this.applyARMetricScaleAndCamera(activeDish);
       this.updateARCalibratorUI(activeDish);
       this.syncRendererViewportAndClear();
 
-      if (activeDish) {
-        const { anchoCm, altoCm } = this.getDishRealDimensions(activeDish);
-        this.showToast(`AR 1:1 en mesa · ⌀ ${anchoCm}×${altoCm} cm`);
-      }
+      this.showToast(`AR 1:1 en cámara · ⌀ ${anchoCm}×${altoCm} cm (${widthMeters.toFixed(2)} m) · Mesa ${distCm} cm`);
     } catch (err) {
-      console.error('[AR Passthrough] Error accediendo a la cámara:', err);
-      if (this.currentModel) {
-        this.applyStudioNormalizedScale(activeDish);
-      }
-      this.showToast('Permiso de cámara no disponible. Mostrando visor AR alternativo.');
-      const arModal = document.getElementById('ar-modal');
-      if (arModal) arModal.classList.remove('hidden');
+      console.warn('[AR 1:1] Cámara no disponible o denegada, manteniendo proyección 3D 1:1 sobre mesa:', err);
+      this.showToast(`Proyección AR 1:1 activa · ⌀ ${anchoCm}×${altoCm} cm (${widthMeters.toFixed(2)} m) · Mesa ${distCm} cm`);
     }
   }
 
@@ -2254,15 +2413,12 @@ export class Menu3DApp {
     document.getElementById('nutri-carbohidratos').textContent = nutri.carbohidratos || '—';
     document.getElementById('nutri-grasas').textContent = nutri.grasas || '—';
 
-    const dims = dish.dimensiones_reales || `⌀ ${dish.diametro_cm || 24} cm · Altura ${dish.altura_cm || 6} cm`;
-    const realDimsEl = document.getElementById('dish-real-dimensions');
-    if (realDimsEl) realDimsEl.textContent = dims;
-
     // Modal AR
     const arTitle = document.getElementById('ar-dish-title');
-    const arDims = document.getElementById('ar-dimensions-label');
     if (arTitle) arTitle.textContent = `${dish.nombre} (Escala 1:1)`;
-    if (arDims) arDims.textContent = dims;
+
+    // Actualizar medidas reales detectadas (cm y m) y distancia de mesa en toda la UI
+    this.updateLiveMetricsUI(dish);
 
     // Alérgenos
     const allergensContainer = document.getElementById('allergens-list');
@@ -2509,7 +2665,7 @@ export class Menu3DApp {
         splitSummaryEl.innerHTML = `
           <div class="split-accounts-header">
             <span>Cuentas Divididas en Mesa</span>
-            <button type="button" id="modal-add-subaccount-btn" class="subaccount-add-btn">+ Nueva Cuenta / Familia</button>
+            <button type="button" id="modal-add-subaccount-btn" data-action="add-subaccount" class="subaccount-add-btn">+ Nueva Cuenta / Familia</button>
           </div>
           <div class="split-account-row">
             <span>Sin consumos cargados aún</span>
@@ -2530,14 +2686,10 @@ export class Menu3DApp {
         splitSummaryEl.innerHTML = `
           <div class="split-accounts-header">
             <span>Subtotales por Cuenta / Familia</span>
-            <button type="button" id="modal-add-subaccount-btn" class="subaccount-add-btn">+ Nueva Cuenta / Familia</button>
+            <button type="button" id="modal-add-subaccount-btn" data-action="add-subaccount" class="subaccount-add-btn">+ Nueva Cuenta / Familia</button>
           </div>
           ${rowsHtml}
         `;
-      }
-      const modalAddAccBtn = document.getElementById('modal-add-subaccount-btn');
-      if (modalAddAccBtn) {
-        modalAddAccBtn.addEventListener('click', () => this.createNewSubAccount());
       }
     }
 
@@ -2710,194 +2862,214 @@ export class Menu3DApp {
   }
 
   /**
-   * Conecta los controles de UI: AR 1:1 con prioridad táctil, Toggle "📏 Dimensiones", Cuentas Divididas, Nutrición, Carrito y Comanda.
+   * Conecta todos los botones del visor y de la carta mediante un único despachador determinístico (`handleUIAction`),
+   * garantizando respuesta inmediata al clic/toque en móvil y escritorio sin doble disparo ni capas bloqueantes.
    */
   bindUIEvents() {
-    const nutritionPanel = document.getElementById('nutrition-panel');
-    const arModal = document.getElementById('ar-modal');
-    const orderModal = document.getElementById('order-modal');
+    if (this._uiEventsBound) return;
+    this._uiEventsBound = true;
+
+    const getNutritionPanel = () => document.getElementById('nutrition-panel');
+    const getArModal = () => document.getElementById('ar-modal');
+    const getOrderModal = () => document.getElementById('order-modal');
 
     const closeAllModals = () => {
-      nutritionPanel.classList.add('hidden');
-      arModal.classList.add('hidden');
-      orderModal.classList.add('hidden');
+      const nutritionPanel = getNutritionPanel();
+      const arModal = getArModal();
+      const orderModal = getOrderModal();
+      if (nutritionPanel) nutritionPanel.classList.add('hidden');
+      if (arModal) arModal.classList.add('hidden');
+      if (orderModal) orderModal.classList.add('hidden');
     };
 
-    // Evitar que WebXR DOM Overlay u OrbitControls del canvas 3D intercepten toques sobre las barras HUD
+    // Evitar que WebXR DOM Overlay intercepte toques destinados a botones de las barras HUD
     document.querySelectorAll('.top-bar, .viewer-bottom-bar').forEach((hudEl) => {
       hudEl.addEventListener('beforexrselect', (e) => {
         e.preventDefault();
       });
-      hudEl.addEventListener('pointerdown', (e) => {
-        e.stopPropagation();
-      });
-      hudEl.addEventListener('touchstart', (e) => {
-        e.stopPropagation();
-      }, { passive: true });
     });
 
-    // Botón rápido para crear nueva Cuenta / Familia en la mesa
-    const addSubAccountQuickBtn = document.getElementById('add-subaccount-quick-btn');
-    if (addSubAccountQuickBtn) {
-      addSubAccountQuickBtn.addEventListener('click', (e) => {
-        e.preventDefault();
-        this.createNewSubAccount();
-      });
-    }
+    const handleUIAction = async (action, e) => {
+      const nutritionPanel = getNutritionPanel();
+      const arModal = getArModal();
+      const orderModal = getOrderModal();
 
-    // Toggle "📏 Dimensiones" en el visor 3D
-    const toggleDimsBtn = document.getElementById('toggle-dimensions-btn');
-    if (toggleDimsBtn) {
-      toggleDimsBtn.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        this.showDimensionsGuide = !this.showDimensionsGuide;
-        this.updateDimensionsGuide(this.currentDish);
-      });
-    }
-
-    // Nutrición
-    document.getElementById('toggle-nutrition-btn').addEventListener('click', () => {
-      const wasHidden = nutritionPanel.classList.contains('hidden');
-      closeAllModals();
-      if (wasHidden) {
-        nutritionPanel.classList.remove('hidden');
-      }
-    });
-
-    document.getElementById('close-nutrition-btn').addEventListener('click', () => {
-      nutritionPanel.classList.add('hidden');
-    });
-
-    // Vista AR Escala Real 1:1 -> Arranque inmediato sin bloqueos
-    const openArBtn = document.getElementById('open-ar-btn');
-    if (openArBtn) {
-      openArBtn.addEventListener('click', async (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        closeAllModals();
-        await this.launchAutoARMode();
-      });
-    }
-
-    // Salida inmediata de AR con prioridad táctil (click + touchend)
-    const exitArBtn = document.getElementById('exit-ar-btn');
-    if (exitArBtn) {
-      const handleExitAR = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        this.stopARPassthroughMode();
-      };
-      exitArBtn.addEventListener('click', handleExitAR);
-      exitArBtn.addEventListener('touchend', handleExitAR, { passive: false });
-    }
-
-    // Controles compactos de ajuste fino en modo AR (- / 1:1 / +)
-    const arScaleDownBtn = document.getElementById('ar-scale-down-btn');
-    if (arScaleDownBtn) {
-      arScaleDownBtn.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        this.adjustARScaleFactor(-0.08);
-      });
-    }
-
-    const arScaleResetBtn = document.getElementById('ar-scale-reset-btn');
-    if (arScaleResetBtn) {
-      arScaleResetBtn.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        this.adjustARScaleFactor('reset');
-      });
-    }
-
-    const arScaleUpBtn = document.getElementById('ar-scale-up-btn');
-    if (arScaleUpBtn) {
-      arScaleUpBtn.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        this.adjustARScaleFactor(0.08);
-      });
-    }
-
-    const secondaryNativeArBtn = document.getElementById('secondary-native-ar-btn');
-    if (secondaryNativeArBtn) {
-      secondaryNativeArBtn.addEventListener('click', async (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const modelViewer = document.getElementById('ar-model-viewer');
-        if (modelViewer && !modelViewer.getAttribute('src') && this.currentDish && this.currentModel) {
-          await this.prepareARModelSource(
-            this.currentDish,
-            this.currentModel,
-            this.currentModelCameFromGLB
-          ).catch(() => {});
+      switch (action) {
+        case 'open-ar': {
+          e.preventDefault();
+          closeAllModals();
+          await this.launchAutoARMode();
+          break;
         }
-        arModal.classList.remove('hidden');
-        if (modelViewer && typeof modelViewer.activateAR === 'function') {
-          try {
-            modelViewer.activateAR();
-          } catch (_) {}
+        case 'exit-ar': {
+          e.preventDefault();
+          this.stopARPassthroughMode();
+          break;
         }
-      });
-    }
-
-    document.getElementById('close-ar-btn').addEventListener('click', () => {
-      arModal.classList.add('hidden');
-    });
-
-    document.getElementById('trigger-native-ar-btn').addEventListener('click', async () => {
-      const modelViewer = document.getElementById('ar-model-viewer');
-      if (modelViewer && !modelViewer.getAttribute('src') && this.currentDish && this.currentModel) {
-        await this.prepareARModelSource(
-          this.currentDish,
-          this.currentModel,
-          this.currentModelCameFromGLB
-        ).catch(() => {});
-      }
-      if (modelViewer && typeof modelViewer.activateAR === 'function') {
-        try {
-          modelViewer.activateAR();
-        } catch (err) {
-          arModal.classList.add('hidden');
-          this.startARPassthroughMode();
+        case 'ar-scale-down': {
+          e.preventDefault();
+          this.adjustARScaleFactor(-0.08);
+          break;
         }
-      } else {
-        arModal.classList.add('hidden');
-        this.startARPassthroughMode();
+        case 'ar-scale-reset': {
+          e.preventDefault();
+          this.adjustARScaleFactor('reset');
+          break;
+        }
+        case 'ar-scale-up': {
+          e.preventDefault();
+          this.adjustARScaleFactor(0.08);
+          break;
+        }
+        case 'toggle-dimensions': {
+          e.preventDefault();
+          this.showDimensionsGuide = !this.showDimensionsGuide;
+          this.updateDimensionsGuide(this.currentDish);
+          this.showToast(
+            this.showDimensionsGuide
+              ? 'Guía 3D de dimensiones activada'
+              : 'Guía 3D de dimensiones oculta'
+          );
+          break;
+        }
+        case 'open-native-ar': {
+          e.preventDefault();
+          const modelViewer = document.getElementById('ar-model-viewer');
+          if (modelViewer && !modelViewer.getAttribute('src') && this.currentDish && this.currentModel) {
+            await this.prepareARModelSource(
+              this.currentDish,
+              this.currentModel,
+              this.currentModelCameFromGLB
+            ).catch(() => {});
+          }
+          if (arModal) arModal.classList.remove('hidden');
+          if (modelViewer && modelViewer.canActivateAR && typeof modelViewer.activateAR === 'function') {
+            try {
+              modelViewer.activateAR();
+            } catch (_) {}
+          }
+          break;
+        }
+        case 'trigger-native-ar': {
+          e.preventDefault();
+          const modelViewer = document.getElementById('ar-model-viewer');
+          if (modelViewer && !modelViewer.getAttribute('src') && this.currentDish && this.currentModel) {
+            await this.prepareARModelSource(
+              this.currentDish,
+              this.currentModel,
+              this.currentModelCameFromGLB
+            ).catch(() => {});
+          }
+          if (modelViewer && modelViewer.canActivateAR && typeof modelViewer.activateAR === 'function') {
+            try {
+              modelViewer.activateAR();
+            } catch (_) {
+              if (arModal) arModal.classList.add('hidden');
+              await this.startARPassthroughMode();
+            }
+          } else {
+            if (arModal) arModal.classList.add('hidden');
+            await this.startARPassthroughMode();
+          }
+          break;
+        }
+        case 'close-ar': {
+          e.preventDefault();
+          if (arModal) arModal.classList.add('hidden');
+          break;
+        }
+        case 'toggle-nutrition': {
+          e.preventDefault();
+          if (!nutritionPanel) return;
+          const wasHidden = nutritionPanel.classList.contains('hidden');
+          closeAllModals();
+          if (wasHidden) {
+            nutritionPanel.classList.remove('hidden');
+          }
+          break;
+        }
+        case 'close-nutrition': {
+          e.preventDefault();
+          if (nutritionPanel) nutritionPanel.classList.add('hidden');
+          break;
+        }
+        case 'add-subaccount': {
+          e.preventDefault();
+          this.createNewSubAccount();
+          break;
+        }
+        case 'add-to-order': {
+          e.preventDefault();
+          this.addConfiguredCurrentDishToCart();
+          break;
+        }
+        case 'open-cart': {
+          e.preventDefault();
+          if (!orderModal) return;
+          const wasHidden = orderModal.classList.contains('hidden');
+          closeAllModals();
+          if (wasHidden) {
+            this.renderCartState();
+            orderModal.classList.remove('hidden');
+          }
+          break;
+        }
+        case 'close-order': {
+          e.preventDefault();
+          if (orderModal) orderModal.classList.add('hidden');
+          break;
+        }
+        case 'send-comanda': {
+          e.preventDefault();
+          this.dispatchRealtimeEvent('COMANDA');
+          break;
+        }
+        case 'call-waiter': {
+          e.preventDefault();
+          this.dispatchRealtimeEvent('LLAMADO_MESERO');
+          break;
+        }
+        default:
+          break;
       }
-    });
+    };
 
-    // Añadir plato personalizado a la comanda
-    document.getElementById('add-to-order-btn').addEventListener('click', () => {
-      this.addConfiguredCurrentDishToCart();
-    });
+    const idToActionMap = {
+      'open-ar-btn': 'open-ar',
+      'ar-btn': 'open-ar',
+      'exit-ar-btn': 'exit-ar',
+      'ar-scale-down-btn': 'ar-scale-down',
+      'ar-scale-down': 'ar-scale-down',
+      'ar-scale-reset-btn': 'ar-scale-reset',
+      'ar-scale-reset': 'ar-scale-reset',
+      'ar-scale-up-btn': 'ar-scale-up',
+      'ar-scale-up': 'ar-scale-up',
+      'toggle-dimensions-btn': 'toggle-dimensions',
+      'secondary-native-ar-btn': 'open-native-ar',
+      'trigger-native-ar-btn': 'trigger-native-ar',
+      'close-ar-btn': 'close-ar',
+      'toggle-nutrition-btn': 'toggle-nutrition',
+      'close-nutrition-btn': 'close-nutrition',
+      'add-subaccount-quick-btn': 'add-subaccount',
+      'modal-add-subaccount-btn': 'add-subaccount',
+      'add-to-order-btn': 'add-to-order',
+      'cart-button': 'open-cart',
+      'close-order-btn': 'close-order',
+      'send-comanda-btn': 'send-comanda',
+      'call-waiter-btn': 'call-waiter',
+      'modal-call-waiter-btn': 'call-waiter'
+    };
 
-    // Abrir modal de comanda
-    document.getElementById('cart-button').addEventListener('click', () => {
-      const wasHidden = orderModal.classList.contains('hidden');
-      closeAllModals();
-      if (wasHidden) {
-        this.renderCartState();
-        orderModal.classList.remove('hidden');
+    document.addEventListener('click', (e) => {
+      const btn = e.target && typeof e.target.closest === 'function'
+        ? e.target.closest('button, [data-action]')
+        : null;
+      if (!btn) return;
+
+      const action = btn.getAttribute('data-action') || idToActionMap[btn.id];
+      if (action && idToActionMap[btn.id] !== undefined || (action && action !== 'dec' && action !== 'inc')) {
+        handleUIAction(action, e);
       }
-    });
-
-    document.getElementById('close-order-btn').addEventListener('click', () => {
-      orderModal.classList.add('hidden');
-    });
-
-    // Botones de Enviar Comanda y Llamar Mesero
-    document.getElementById('send-comanda-btn').addEventListener('click', () => {
-      this.dispatchRealtimeEvent('COMANDA');
-    });
-
-    document.getElementById('call-waiter-btn').addEventListener('click', () => {
-      this.dispatchRealtimeEvent('LLAMADO_MESERO');
-    });
-
-    document.getElementById('modal-call-waiter-btn').addEventListener('click', () => {
-      this.dispatchRealtimeEvent('LLAMADO_MESERO');
     });
   }
 

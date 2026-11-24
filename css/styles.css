@@ -113,27 +113,34 @@ body.ar-passthrough-active .viewer-stage {
   display: none !important;
 }
 
-/* Contenedor de modales flotantes (Nutrición, Visor AR Nativo y Comanda) */
-.ui-layer {
-  position: fixed;
-  inset: 0;
-  z-index: 30;
+/* Asegurar que los elementos internos de un botón (SVG, path, span) nunca intercepten ni desvíen el clic */
+button svg,
+button path,
+button polyline,
+button line,
+button circle,
+button rect,
+button span,
+.option-pill > *,
+.carousel-card > * {
   pointer-events: none;
 }
 
-/* Reactivar eventos de puntero con prioridad táctil en controles interactivos y tarjetas */
+/* Reactivar eventos de puntero con prioridad táctil absoluta en todos los controles interactivos */
 button,
 a,
 input,
 select,
 textarea,
 [role="button"],
+.top-bar,
 .brand-row,
 .top-actions,
 .category-tabs,
 .category-tab,
 .cart-btn,
 .call-waiter-btn,
+.viewer-bottom-bar,
 .viewer-hud-status,
 .viewer-buttons-row,
 .ar-launch-btn,
@@ -160,6 +167,7 @@ textarea,
 .icon-btn {
   pointer-events: auto !important;
   touch-action: manipulation;
+  cursor: pointer;
 }
 
 /* Barra superior compacta anclada al borde superior del visor 3D */
@@ -168,11 +176,10 @@ textarea,
   top: 8px;
   left: 10px;
   right: 10px;
-  z-index: 28;
+  z-index: 45;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  pointer-events: none;
   max-width: 980px;
   margin: 0 auto;
 }
@@ -433,7 +440,7 @@ body.ar-passthrough-active .category-tabs {
   left: 10px;
   right: 10px;
   bottom: 10px;
-  z-index: 28;
+  z-index: 45;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -441,7 +448,6 @@ body.ar-passthrough-active .category-tabs {
   gap: 8px;
   max-width: 980px;
   margin: 0 auto;
-  pointer-events: none;
 }
 
 .viewer-hud-status {
@@ -745,6 +751,35 @@ body.ar-passthrough-active .bottom-dock {
   border: 1px solid rgba(197, 160, 89, 0.28);
   padding: 5px 11px;
   border-radius: var(--radius-md);
+}
+
+.dish-live-metrics-pill {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 14px;
+  background: rgba(197, 160, 89, 0.1);
+  border: 1px solid rgba(197, 160, 89, 0.34);
+  border-radius: var(--radius-md);
+  padding: 7px 11px;
+  font-size: 0.75rem;
+  color: var(--text-main);
+  font-variant-numeric: tabular-nums;
+}
+
+.dish-live-metrics-pill strong {
+  color: var(--accent-secondary);
+  font-weight: 700;
+}
+
+.dish-live-metrics-pill code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.71rem;
+  color: #fde68a;
+  background: rgba(14, 16, 19, 0.65);
+  padding: 1px 5px;
+  border-radius: 4px;
 }
 
 .dish-description {
@@ -1130,14 +1165,14 @@ body.ar-passthrough-active .bottom-dock {
   max-height: calc(100vh - 32px);
   max-height: calc(100dvh - 32px);
   overflow-y: auto;
-  background: rgba(14, 16, 19, 0.94);
+  background: rgba(14, 16, 19, 0.96);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--glass-border-accent);
   border-radius: var(--radius-lg);
   padding: 20px;
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.78);
-  z-index: 35;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.85);
+  z-index: 55;
   transition: opacity 0.22s ease, transform 0.22s ease;
 }
 
