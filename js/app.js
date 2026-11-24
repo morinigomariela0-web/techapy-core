@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 
 const CHANNEL_NAME = 'kuroshio_comandas_channel';
 const STORAGE_KEY = 'kuroshio_comandas_store';
@@ -76,32 +78,21 @@ export class Menu3DApp {
     this.baseRotationSpeed = 0.18;
 
     this.clock = new THREE.Clock();
-    this.glbCache = new Map(); // ruta_modelo_glb -> { sceneTemplate, intrinsicMetrics }
     this.perfProfile = this.detectPerformanceProfile();
     if (this.perfProfile.isLite) {
       document.body.classList.add('perf-lite');
     }
 
-    // 1. Vincular eventos de interfaz, sesión y bus de comandas ANTES de WebGL
-    // para garantizar que todos los botones respondan en < 1ms incluso si WebGL tarda o no está disponible.
+    this.initScene();
+    this.initLights();
+    this.initContactShadow();
+    this.initLoaders();
+    this.initRealtimeComandaBus();
     this.bindUIEvents();
     this.syncSessionContextUI();
-    this.initRealtimeComandaBus();
-
-    // 2. Inicializar motor 3D WebGL de forma resiliente
-    try {
-      this.initScene();
-      this.initLights();
-      this.initContactShadow();
-      this.initLoaders();
-      this.animate();
-    } catch (webglErr) {
-      console.warn('[Menu3DApp] WebGL en modo degradado o sin aceleración GPU:', webglErr);
-      this.setLoading(false);
-    }
-
     this.checkWebXRHitTestSupport();
     this.loadMenuData();
+    this.animate();
   }
 
   /**
@@ -286,41 +277,16 @@ export class Menu3DApp {
   }
 
   /**
-   * Inicializa GLTFLoader ligero. DRACOLoader, GLTFExporter y @google/model-viewer
-   * se cargan bajo demanda solo si se solicitan para no bloquear el primer renderizado.
+   * Inicializa GLTFLoader, DRACOLoader y GLTFExporter para AR 1:1.
    */
   initLoaders() {
-    this.gltfLoader = new GLTFLoader();
-    this.dracoLoader = null;
-    this.gltfExporter = null;
-  }
+    this.dracoLoader = new DRACOLoader();
+    this.dracoLoader.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/libs/draco/');
 
-  async ensureModelViewerAndExporterLoaded() {
-    if (typeof window !== 'undefined' && window.customElements && !window.customElements.get('model-viewer')) {
-      await new Promise((resolve) => {
-        const existingScript = document.querySelector('script[data-model-viewer-lazy]');
-        if (existingScript) {
-          existingScript.addEventListener('load', resolve, { once: true });
-          existingScript.addEventListener('error', resolve, { once: true });
-          return;
-        }
-        const script = document.createElement('script');
-        script.type = 'module';
-        script.dataset.modelViewerLazy = 'true';
-        script.src = 'https://ajax.googleapis.com/ajax/libs/model-viewer/3.5.0/model-viewer.min.js';
-        script.onload = () => resolve();
-        script.onerror = () => resolve();
-        document.head.appendChild(script);
-      });
-    }
-    if (!this.gltfExporter) {
-      try {
-        const mod = await import('three/addons/exporters/GLTFExporter.js');
-        if (mod && mod.GLTFExporter) {
-          this.gltfExporter = new mod.GLTFExporter();
-        }
-      } catch (_) {}
-    }
+    this.gltfLoader = new GLTFLoader();
+    this.gltfLoader.setDRACOLoader(this.dracoLoader);
+
+    this.gltfExporter = new GLTFExporter();
   }
 
   /**
@@ -712,8 +678,8 @@ export class Menu3DApp {
 
   /**
    * Selecciona un plato por ID, inicializa sus variantes por defecto, actualiza la UI,
-   * muestra el plato 3D en el primer frame (< 15ms) sin bloquear la interfaz con el loader,
-   * y aplica el modelo .glb desde caché o en segundo plano manteniendo escala 1:1 y rotación.
+   * carga el modelo .glb real con sus texturas/materiales mientras `visible = false`
+   * y lo muestra con su escala final sin fotograma gigante ni reemplazos genéricos.
    */
   async selectDish(dishId) {
     const dish = this.dishes.find((item) => item.id === dishId);
@@ -729,20 +695,22 @@ export class Menu3DApp {
       this.transitionCameraTo(dish.cameraConfig);
     }
 
-    if (!this.scene || !this.renderer) {
-      this.setLoading(false);
-      return;
-    }
-
+    this.setLoading(true, `Preparando ${dish.nombre}...`);
     this.disposeDimensionsGuide();
     this.disposeCurrentModel();
 
-    const mountModelGroup = (modelGroup, cameFromGLB, preserveRotY = 0) => {
-      this.disposeCurrentModel();
+    try {
+      const { modelGroup, cameFromGLB } = await this.loadGLBOrFallback(dish);
+
+      if (requestId !== this.loadRequestId) {
+        this.disposeObjectResources(modelGroup);
+        return;
+      }
+
+      // Mantener oculto mientras se calcula su Box3 y escala final para eliminar cualquier salto gigante
       modelGroup.visible = false;
       modelGroup.userData.isDishModel = true;
       this.getOrComputeIntrinsicMetrics(modelGroup);
-      modelGroup.rotation.y = preserveRotY;
 
       this.currentModel = modelGroup;
       this.currentModelCameFromGLB = cameFromGLB;
@@ -754,75 +722,19 @@ export class Menu3DApp {
         this.applyStudioNormalizedScale(dish);
       }
 
+      // Actualizar guía 3D de dimensiones y control AR si están activos
       this.updateDimensionsGuide(dish);
       this.updateARCalibratorUI(dish);
       this.syncRendererViewportAndClear();
       this.setLoading(false);
-    };
 
-    // 1. Si el .glb ya está en caché en memoria, montarlo en 0ms sin spinner
-    const cacheKey = dish.ruta_modelo_glb || '';
-    if (cacheKey && this.glbCache.has(cacheKey)) {
-      const cached = this.glbCache.get(cacheKey);
-      const cloneGroup = cached.sceneTemplate.clone(true);
-      cloneGroup.userData.intrinsicMetrics = { ...cached.intrinsicMetrics };
-      mountModelGroup(cloneGroup, true, 0);
-      return;
+      // Preparar modelo GLB en escala real 1:1 para el visor AR (@google/model-viewer)
+      await this.prepareARModelSource(dish, modelGroup, cameFromGLB);
+    } finally {
+      if (requestId === this.loadRequestId) {
+        this.setLoading(false);
+      }
     }
-
-    // 2. Renderizado Inmediato (< 15ms): montar el modelo procedural estilizado en el primer frame
-    // y quitar el overlay de carga de inmediato para que la escena 3D y todos los botones respondan al instante
-    const instantPreview = this.createProceduralDish(dish);
-    mountModelGroup(instantPreview, false, 0);
-
-    // 3. Si el plato tiene un .glb configurado, cargarlo en segundo plano y reemplazar suavemente al llegar
-    if (cacheKey) {
-      const { modelGroup, cameFromGLB } = await this.loadGLBOrFallback(dish);
-      if (requestId !== this.loadRequestId) {
-        this.disposeObjectResources(modelGroup);
-        return;
-      }
-      if (cameFromGLB && modelGroup) {
-        const currentRotY = this.currentModel ? this.currentModel.rotation.y : 0;
-        mountModelGroup(modelGroup, true, currentRotY);
-      }
-      this.prefetchRemainingModels();
-    }
-  }
-
-  /**
-   * Precarga silenciosamente en segundo plano los modelos .glb restantes de la carta
-   * para que el cambio entre platos del carrusel sea instantáneo (0ms).
-   */
-  prefetchRemainingModels() {
-    if (this._isPrefetchingModels || !this.gltfLoader || !Array.isArray(this.dishes)) return;
-    this._isPrefetchingModels = true;
-
-    const pendingDishes = this.dishes.filter(
-      (d) => d && d.ruta_modelo_glb && !this.glbCache.has(d.ruta_modelo_glb)
-    );
-
-    const next = (idx) => {
-      if (idx >= pendingDishes.length) {
-        this._isPrefetchingModels = false;
-        return;
-      }
-      const d = pendingDishes[idx];
-      if (this.glbCache.has(d.ruta_modelo_glb)) {
-        next(idx + 1);
-        return;
-      }
-      this.loadGLBOrFallback(d)
-        .then(({ modelGroup }) => {
-          if (modelGroup) this.disposeObjectResources(modelGroup);
-        })
-        .catch(() => {})
-        .finally(() => {
-          setTimeout(() => next(idx + 1), 120);
-        });
-    };
-
-    setTimeout(() => next(0), 250);
   }
 
   /**
@@ -1346,7 +1258,7 @@ export class Menu3DApp {
    */
   loadGLBOrFallback(dish) {
     return new Promise((resolve) => {
-      if (!dish.ruta_modelo_glb || !this.gltfLoader) {
+      if (!dish.ruta_modelo_glb) {
         const proc = this.createProceduralDish(dish);
         proc.visible = false;
         this.getOrComputeIntrinsicMetrics(proc);
@@ -1354,33 +1266,9 @@ export class Menu3DApp {
         return;
       }
 
-      const cacheKey = dish.ruta_modelo_glb;
-      if (this.glbCache.has(cacheKey)) {
-        const cached = this.glbCache.get(cacheKey);
-        const clone = cached.sceneTemplate.clone(true);
-        clone.visible = false;
-        clone.userData.intrinsicMetrics = { ...cached.intrinsicMetrics };
-        resolve({ modelGroup: clone, cameFromGLB: true });
-        return;
-      }
-
-      let settled = false;
-      const fallbackTimer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        const proceduralModel = this.createProceduralDish(dish);
-        proceduralModel.visible = false;
-        this.getOrComputeIntrinsicMetrics(proceduralModel);
-        resolve({ modelGroup: proceduralModel, cameFromGLB: false });
-      }, 3800);
-
       this.gltfLoader.load(
-        cacheKey,
+        dish.ruta_modelo_glb,
         (gltf) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(fallbackTimer);
-
           const root = gltf.scene;
           root.visible = false;
           root.scale.setScalar(1);
@@ -1389,13 +1277,6 @@ export class Menu3DApp {
           root.updateMatrixWorld(true);
 
           const metrics = this.getOrComputeIntrinsicMetrics(root);
-
-          // Guardar plantilla en caché en memoria para cambios instantáneos (0ms) en el carrusel
-          const templateClone = root.clone(true);
-          this.glbCache.set(cacheKey, {
-            sceneTemplate: templateClone,
-            intrinsicMetrics: { ...metrics }
-          });
 
           // Si el .glb proviene de un escaneo LiDAR en metros reales (0.08 m a 0.65 m)
           // y el plato no tenía dimensiones explícitas, sincronizar sus centímetros reales
@@ -1417,10 +1298,6 @@ export class Menu3DApp {
         },
         undefined,
         () => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(fallbackTimer);
-
           const proceduralModel = this.createProceduralDish(dish);
           proceduralModel.visible = false;
           this.getOrComputeIntrinsicMetrics(proceduralModel);
@@ -1432,10 +1309,9 @@ export class Menu3DApp {
 
   /**
    * Genera o asigna el archivo .glb en escala física 1:1 (metros reales, 1 unidad = 1 metro)
-   * para el componente <model-viewer ar ar-scale="fixed"> bajo demanda.
+   * para el componente <model-viewer ar ar-scale="fixed">.
    */
   async prepareARModelSource(dish, modelGroup, cameFromGLB) {
-    await this.ensureModelViewerAndExporterLoaded();
     const modelViewer = document.getElementById('ar-model-viewer');
     if (!modelViewer) return;
 
@@ -1453,8 +1329,6 @@ export class Menu3DApp {
       modelViewer.scale = `${exactMetricFactor} ${exactMetricFactor} ${exactMetricFactor}`;
       return;
     }
-
-    if (!this.gltfExporter) return;
 
     modelViewer.scale = '1 1 1';
     const arClone = modelGroup.clone(true);
@@ -1606,16 +1480,22 @@ export class Menu3DApp {
 
   /**
    * Punto de entrada unificado al pulsar "Ver en mi mesa (AR) 1:1":
-   * Inicia de inmediato la vista AR 1:1 en cámara directa sin bloquear la interfaz ni ocultar el modelo
-   * mientras se inicializa el hardware de cámara.
+   * - Si el navegador/dispositivo soporta WebXR `immersive-ar` con `hit-test`, detecta el plano real
+   *   de la mesa y coloca/escala el plato 1:1 automáticamente.
+   * - En caso contrario, inicia automáticamente el modo cámara passthrough (`getUserMedia`)
+   *   con calibración óptica universal 1:1 y control de ajuste fino.
    */
   async launchAutoARMode() {
-    await this.startARPassthroughMode();
+    if (this.isWebXRSupported && navigator.xr) {
+      await this.startWebXRHitTestSession();
+    } else {
+      await this.startARPassthroughMode();
+    }
   }
 
   /**
-   * Inicia una sesión WebXR `immersive-ar` con `hit-test` real cuando se solicita explícitamente.
-   * Mantiene visible el plato 1:1 desde el primer fotograma y permite salir con prioridad táctil.
+   * Inicia una sesión WebXR `immersive-ar` con `hit-test` real para colocar y escalar automáticamente
+   * el plato 1:1 sobre el plano físico detectado de la mesa (`1 unidad = 1 metro`).
    */
   async startWebXRHitTestSession() {
     if (!navigator.xr || !this.isWebXRSupported) {
@@ -1624,6 +1504,10 @@ export class Menu3DApp {
     }
 
     try {
+      // Ocultar modelo de estudio antes de cambiar de modo para evitar fotograma gigante inicial
+      if (this.currentModel) {
+        this.currentModel.visible = false;
+      }
       this.disposeDimensionsGuide();
       this.syncRendererViewportAndClear();
 
@@ -1653,12 +1537,10 @@ export class Menu3DApp {
       if (openArBtn) openArBtn.classList.add('hidden');
       if (exitArBtn) exitArBtn.classList.remove('hidden');
 
-      // Escalar el modelo a metros reales y mostrarlo de inmediato a 50 cm frente al visor hasta que el hit-test ancle en mesa
+      // Escalar el modelo a metros reales pero mantenerlo oculto hasta que el primer hit-test detecte la mesa
       const widthMeters = this.normalizeModelToRealMetricMeters(this.currentDish);
       if (this.currentModel) {
-        this.currentModel.position.y += -0.18;
-        this.currentModel.position.z += -0.52;
-        this.currentModel.visible = true;
+        this.currentModel.visible = false;
       }
       this.updateARCalibratorUI(this.currentDish);
 
@@ -1718,11 +1600,10 @@ export class Menu3DApp {
   }
 
   /**
-   * Activa el Modo Cámara Directa (AR Passthrough 1:1) con arranque instantáneo sin bloqueos:
-   * 1. De forma síncrona (< 2ms): activa los controles de salida/calibración (`Salir de AR`, `-`, `1:1`, `+`)
-   *    y renderiza el plato 3D en escala métrica real 1:1 (`anchoCm / 100` m, base en `y = 0`) de inmediato.
-   * 2. En segundo plano (con timeout de seguridad de 4s): enciende la cámara trasera detrás del canvas transparente.
-   *    Si la cámara tarda o no está disponible, el modelo 3D 1:1 y todos los botones siguen 100% operativos.
+   * Activa el Modo Cámara Directa (AR Passthrough 1:1) sin salto gigante ni residuos visuales:
+   * - Oculta el modelo de estudio y limpia los buffers WebGL antes de cambiar dimensiones del contenedor.
+   * - Enciende la cámara trasera (`facingMode: 'environment'`) detrás del canvas transparente (`alpha: true`).
+   * - Aplica la escala métrica 1:1 universal y posiciona la cámara antes de volver a hacer visible el plato.
    */
   async startARPassthroughMode() {
     if (this.isARPassthroughActive) {
@@ -1742,44 +1623,24 @@ export class Menu3DApp {
     const exitArBtn = document.getElementById('exit-ar-btn');
     const secondaryNativeBtn = document.getElementById('secondary-native-ar-btn');
 
-    // 1. Arranque síncrono e inmediato de la escena AR 1:1 y controles táctiles (sin esperar a getUserMedia)
-    this.setLoading(false);
-    this.isARPassthroughActive = true;
-    this.arUserScaleFactor = 1.0;
-    this.disposeDimensionsGuide();
-    document.body.classList.add('ar-passthrough-active');
-
-    if (openArBtn) openArBtn.classList.add('hidden');
-    if (exitArBtn) exitArBtn.classList.remove('hidden');
-    if (secondaryNativeBtn) secondaryNativeBtn.classList.remove('hidden');
-
-    this.syncRendererViewportAndClear();
-    this.applyARMetricScaleAndCamera(activeDish);
-    this.updateARCalibratorUI(activeDish);
-    this.syncRendererViewportAndClear();
-
-    if (activeDish) {
-      const { anchoCm, altoCm } = this.getDishRealDimensions(activeDish);
-      this.showToast(`AR 1:1 Activo · ⌀ ${anchoCm}×${altoCm} cm (Ajuste fino: − / 1:1 / +)`);
-    }
-
-    // 2. Solicitar stream de cámara trasera en paralelo con timeout de seguridad para no congelar nunca la UI
     if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+      this.showToast('La cámara requiere conexión HTTPS. Abriendo visor AR secundario...');
+      const arModal = document.getElementById('ar-modal');
+      if (arModal) arModal.classList.remove('hidden');
       return;
     }
 
-    const requestCameraWithTimeout = (constraints, timeoutMs = 4000) =>
-      Promise.race([
-        navigator.mediaDevices.getUserMedia(constraints),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('CAMERA_TIMEOUT')), timeoutMs)
-        )
-      ]);
-
     try {
+      // 1. Ocultar inmediatamente el modelo a escala de estudio y limpiar buffers para evitar cualquier flash gigante
+      if (this.currentModel) {
+        this.currentModel.visible = false;
+      }
+      this.disposeDimensionsGuide();
+      this.syncRendererViewportAndClear();
+
       let stream = null;
       try {
-        stream = await requestCameraWithTimeout({
+        stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: { ideal: 'environment' },
             width: { ideal: 1280 },
@@ -1788,33 +1649,46 @@ export class Menu3DApp {
           audio: false
         });
       } catch (_) {
-        stream = await requestCameraWithTimeout({
+        stream = await navigator.mediaDevices.getUserMedia({
           video: true,
           audio: false
         });
       }
 
-      // Si el usuario pulsó "Salir de AR" mientras la cámara abría, apagar tracks de inmediato
-      if (!this.isARPassthroughActive) {
-        if (stream) {
-          stream.getTracks().forEach((track) => {
-            try {
-              track.stop();
-            } catch (_) {}
-          });
-        }
-        return;
-      }
-
       this.arMediaStream = stream;
-      if (videoEl && stream) {
+      this.isARPassthroughActive = true;
+      this.arUserScaleFactor = 1.0;
+
+      if (videoEl) {
         videoEl.srcObject = stream;
         videoEl.classList.remove('hidden');
-        videoEl.play().catch(() => {});
+        await videoEl.play().catch(() => {});
       }
+
+      document.body.classList.add('ar-passthrough-active');
+
+      if (openArBtn) openArBtn.classList.add('hidden');
+      if (exitArBtn) exitArBtn.classList.remove('hidden');
+      if (secondaryNativeBtn) secondaryNativeBtn.classList.remove('hidden');
+
+      // 2. Sincronizar tamaño exacto del contenedor 72dvh y aplicar escala 1:1 antes de mostrar el modelo
       this.syncRendererViewportAndClear();
+      this.applyARMetricScaleAndCamera(activeDish);
+      this.updateARCalibratorUI(activeDish);
+      this.syncRendererViewportAndClear();
+
+      if (activeDish) {
+        const { anchoCm, altoCm } = this.getDishRealDimensions(activeDish);
+        this.showToast(`AR 1:1 en mesa · ⌀ ${anchoCm}×${altoCm} cm`);
+      }
     } catch (err) {
-      console.warn('[AR Passthrough] Cámara no disponible o tardó; manteniendo plato 3D 1:1 interactivo:', err);
+      console.error('[AR Passthrough] Error accediendo a la cámara:', err);
+      if (this.currentModel) {
+        this.applyStudioNormalizedScale(activeDish);
+      }
+      this.showToast('Permiso de cámara no disponible. Mostrando visor AR alternativo.');
+      const arModal = document.getElementById('ar-modal');
+      if (arModal) arModal.classList.remove('hidden');
     }
   }
 

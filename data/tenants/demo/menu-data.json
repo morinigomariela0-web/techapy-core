@@ -69,7 +69,7 @@
           ]
         }
       ],
-      "ruta_modelo_glb": "./assets/tenants/demo/models/burger.glb",
+      "ruta_modelo_glb": "./assets/tenants/demo/models/gyozas.glb",
       "escala": 1.0,
       "escala_ar_metros": 0.12,
       "diametro_cm": 24,

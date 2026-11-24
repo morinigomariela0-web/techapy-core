@@ -536,10 +536,78 @@ def build_dessert_glb(filepath):
     b.export_glb(filepath)
 
 
+def build_gyozas_glb(filepath):
+    """
+    Construye `gyozas.glb`: 5 Gyozas Artesanales a la Plancha dispuestas en abanico sobre plato cerámico oscuro
+    con textura de masa dorada al vapor/plancha, base tostada crujiente, pliegues superiores y cuenco de salsa de soja.
+    """
+    b = GLBBuilder()
+
+    tex_dough = b.add_png_texture("gyoza_dough", create_png_texture(64, 64, (238, 204, 152), (248, 228, 188), "noise"))
+    tex_crust = b.add_png_texture("gyoza_seared_crust", create_png_texture(64, 64, (178, 98, 36), (218, 142, 66), "stripes"))
+    tex_plate = b.add_png_texture("ceramic_slate", create_png_texture(64, 64, (26, 31, 41), (42, 49, 64), "noise"))
+    tex_soy = b.add_png_texture("soy_chili_sauce", create_png_texture(64, 64, (44, 18, 10), (96, 32, 14), "spiral"))
+
+    mat_plate = b.add_material("CeramicPlate", (1.0, 1.0, 1.0, 1.0), roughness=0.18, metallic=0.08, texture_idx=tex_plate)
+    mat_rim = b.add_material("CeramicRim", (0.18, 0.21, 0.27, 1.0), roughness=0.16, metallic=0.10)
+    mat_dough = b.add_material("GyozaDough", (1.0, 1.0, 1.0, 1.0), roughness=0.38, metallic=0.02, texture_idx=tex_dough)
+    mat_crust = b.add_material("ToastedCrust", (1.0, 1.0, 1.0, 1.0), roughness=0.46, metallic=0.02, texture_idx=tex_crust)
+    mat_soy = b.add_material("SoySauce", (1.0, 1.0, 1.0, 1.0), roughness=0.10, metallic=0.04, texture_idx=tex_soy)
+    mat_scallion = b.add_material("FreshScallion", (0.32, 0.68, 0.26, 1.0), roughness=0.40, metallic=0.02)
+
+    # Plato cerámico base y borde
+    b.add_mesh_node("PlateBase", generate_uv_cylinder(1.04, 0.84, 0.10, 44, y_offset=0.05), mat_plate)
+    b.add_mesh_node("PlateInnerWell", generate_uv_cylinder(0.92, 0.90, 0.02, 40, y_offset=0.105), mat_rim)
+
+    # 5 Gyozas artesanales a la plancha con base tostada y cresta plegada
+    for i in range(5):
+        angle = -0.60 + i * 0.30
+        gx = math.sin(angle) * 0.44
+        gz = math.cos(angle) * 0.26 - 0.14
+        rot_y = -angle * 0.55
+        qy = math.sin(rot_y * 0.5)
+        qw = math.cos(rot_y * 0.5)
+        quat = (0.0, qy, 0.0, qw)
+
+        # Cuerpo de la gyoza
+        b.add_mesh_node(
+            f"GyozaBody_{i+1}",
+            generate_uv_ellipsoid(0.24, 0.12, 0.11, 24, 16, center=(0.0, 0.21, 0.0)),
+            mat_dough,
+            rotation=quat,
+            translation=(gx, 0.0, gz),
+        )
+        # Base dorada a la plancha
+        b.add_mesh_node(
+            f"GyozaSearedBase_{i+1}",
+            generate_uv_ellipsoid(0.22, 0.045, 0.095, 20, 12, center=(0.0, 0.135, 0.0)),
+            mat_crust,
+            rotation=quat,
+            translation=(gx, 0.0, gz),
+        )
+        # Cresta superior plegada artesanalmente
+        b.add_mesh_node(
+            f"GyozaPleatedCrest_{i+1}",
+            generate_uv_ellipsoid(0.21, 0.045, 0.028, 20, 10, center=(0.0, 0.32, 0.0)),
+            mat_crust,
+            rotation=quat,
+            translation=(gx, 0.0, gz),
+        )
+
+    # Cuenco cerámico de salsa de soja y cebollita de verdeo
+    b.add_mesh_node("SoyDipBowl", generate_uv_cylinder(0.23, 0.17, 0.14, 28, y_offset=0.18), mat_rim, translation=(0.46, 0.0, -0.36))
+    b.add_mesh_node("SoyLiquidSurface", generate_uv_cylinder(0.20, 0.19, 0.02, 28, y_offset=0.245), mat_soy, translation=(0.46, 0.0, -0.36))
+    b.add_mesh_node("ScallionGarnish1", generate_uv_cylinder(0.035, 0.035, 0.015, 14, y_offset=0.258), mat_scallion, translation=(0.44, 0.0, -0.35))
+    b.add_mesh_node("ScallionGarnish2", generate_uv_cylinder(0.030, 0.030, 0.015, 14, y_offset=0.258), mat_scallion, translation=(0.49, 0.0, -0.38))
+
+    b.export_glb(filepath)
+
+
 def prepare_models():
     os.makedirs(MODELS_DIR, exist_ok=True)
 
     builders = {
+        "gyozas.glb": build_gyozas_glb,
         "burger.glb": build_burger_glb,
         "ramen.glb": build_ramen_glb,
         "dessert.glb": build_dessert_glb,
@@ -547,32 +615,18 @@ def prepare_models():
 
     for filename, builder_fn in builders.items():
         target_path = os.path.join(MODELS_DIR, filename)
-        downloaded = False
-
-        # Si el usuario fuerza descarga remota con DOWNLOAD_REMOTE=1 y hay red disponible
-        if os.environ.get("DOWNLOAD_REMOTE") == "1" and filename in REMOTE_SAMPLE_URLS:
-            try:
-                url = REMOTE_SAMPLE_URLS[filename]
-                print(f"[models] Descargando {filename} desde {url}...")
-                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=8) as resp:
-                    data = resp.read()
-                    if len(data) > 100 and data[:4] == b"glTF":
-                        with open(target_path, "wb") as f:
-                            f.write(data)
-                        downloaded = True
-            except Exception as err:
-                print(f"[models] Descarga remota omitida ({err}), generando modelo .glb local optimizado...")
-
-        if not downloaded:
-            builder_fn(target_path)
-
+        builder_fn(target_path)
         size_kb = os.path.getsize(target_path) / 1024.0
         print(f" ✅ Modelo 3D verificado: {target_path} ({size_kb:.1f} KB)")
 
-    # Crear copias de compatibilidad para rutas previas (gyozas.glb / mochi.glb)
-    shutil.copyfile(os.path.join(MODELS_DIR, "burger.glb"), os.path.join(MODELS_DIR, "gyozas.glb"))
     shutil.copyfile(os.path.join(MODELS_DIR, "dessert.glb"), os.path.join(MODELS_DIR, "mochi.glb"))
+
+    # Sincronizar todos los modelos en assets/tenants/demo/models y assets/tenants/resto1/models
+    for tenant_slug in ("demo", "resto1"):
+        tenant_models_dir = os.path.join(ROOT_DIR, "assets", "tenants", tenant_slug, "models")
+        os.makedirs(tenant_models_dir, exist_ok=True)
+        for fname in ("gyozas.glb", "burger.glb", "ramen.glb", "dessert.glb", "mochi.glb"):
+            shutil.copyfile(os.path.join(MODELS_DIR, fname), os.path.join(tenant_models_dir, fname))
 
 
 def update_menu_data_json():
@@ -584,18 +638,20 @@ def update_menu_data_json():
         data = json.load(f)
 
     model_mapping = [
-        "./assets/models/burger.glb",
+        "./assets/models/gyozas.glb",
         "./assets/models/ramen.glb",
         "./assets/models/dessert.glb",
     ]
 
     for idx, plato in enumerate(data.get("platos", [])):
-        if idx < len(model_mapping):
-            plato["ruta_modelo_glb"] = model_mapping[idx]
+        if "gyoza" in plato.get("id", ""):
+            plato["ruta_modelo_glb"] = "./assets/models/gyozas.glb"
         elif "ramen" in plato.get("id", ""):
             plato["ruta_modelo_glb"] = "./assets/models/ramen.glb"
         elif "mochi" in plato.get("id", ""):
             plato["ruta_modelo_glb"] = "./assets/models/dessert.glb"
+        elif idx < len(model_mapping):
+            plato["ruta_modelo_glb"] = model_mapping[idx]
         else:
             plato["ruta_modelo_glb"] = "./assets/models/burger.glb"
 

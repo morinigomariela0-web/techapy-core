@@ -69,7 +69,7 @@
           ]
         }
       ],
-      "ruta_modelo_glb": "./assets/tenants/demo/models/burger.glb",
+      "ruta_modelo_glb": "./assets/models/gyozas.glb",
       "escala": 1.0,
       "escala_ar_metros": 0.12,
       "diametro_cm": 24,
@@ -154,7 +154,7 @@
           ]
         }
       ],
-      "ruta_modelo_glb": "./assets/tenants/demo/models/ramen.glb",
+      "ruta_modelo_glb": "./assets/models/ramen.glb",
       "escala": 1.1,
       "escala_ar_metros": 0.11,
       "diametro_cm": 22,
@@ -227,7 +227,7 @@
           ]
         }
       ],
-      "ruta_modelo_glb": "./assets/tenants/demo/models/dessert.glb",
+      "ruta_modelo_glb": "./assets/models/dessert.glb",
       "escala": 1.0,
       "escala_ar_metros": 0.1,
       "diametro_cm": 20,
